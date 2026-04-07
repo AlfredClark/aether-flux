@@ -1,0 +1,14 @@
+### Example user template template
+### Example user template
+
+# IntelliJ project files
+.idea
+out
+gen
+build
+**/target/**
+
+# Paraglide
+src/lib/i18n/paraglide
+src/lib/i18n/project.inlang
+!src/lib/i18n/project.inlang/settings.json

@@ -1,0 +1,5 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "hello_world": "你好，{name}，来自zh！",
+  "description": "使用可视化工作流应用程序构建和运行工具"
+}

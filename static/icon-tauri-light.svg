@@ -1,0 +1,86 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#0f0c29;stop-opacity:1"/>
+            <stop offset="50%" style="stop-color:#302b63;stop-opacity:1"/>
+            <stop offset="100%" style="stop-color:#24243e;stop-opacity:1"/>
+        </linearGradient>
+
+        <linearGradient id="nodeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:1"/>
+            <stop offset="50%" style="stop-color:#7b2cbf;stop-opacity:1"/>
+            <stop offset="100%" style="stop-color:#5a189a;stop-opacity:1"/>
+        </linearGradient>
+
+        <linearGradient id="lineGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:1"/>
+            <stop offset="100%" style="stop-color:#c77dff;stop-opacity:1"/>
+        </linearGradient>
+
+        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+            <feMerge>
+                <feMergeNode in="coloredBlur"/>
+                <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+        </filter>
+
+        <filter id="strongGlow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+            <feMerge>
+                <feMergeNode in="coloredBlur"/>
+                <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+        </filter>
+    </defs>
+
+    <!-- Background -->
+    <circle cx="256" cy="256" r="253" fill="url(#bgGradient)" stroke="#1a1a2e" stroke-width="6"/>
+    <circle cx="256" cy="256" r="230" fill="none" stroke="#ffffff" stroke-width="7.5" opacity="0.5"/>
+
+    <!-- Outline -->
+    <line x1="256" y1="81" x2="407.5" y2="162.5" stroke="#ffffff" stroke-width="10" stroke-dasharray="10,10" opacity="1"/>
+    <line x1="407.5" y1="162.5" x2="407.5" y2="349.5" stroke="#ffffff" stroke-width="10" stroke-dasharray="10,10"
+          opacity="1"/>
+    <line x1="407.5" y1="349.5" x2="256" y2="431" stroke="#ffffff" stroke-width="10" stroke-dasharray="10,10" opacity="1"/>
+    <line x1="256" y1="431" x2="104.5" y2="349.5" stroke="#ffffff" stroke-width="10" stroke-dasharray="10,10" opacity="1"/>
+    <line x1="104.5" y1="349.5" x2="104.5" y2="162.5" stroke="#ffffff" stroke-width="10" stroke-dasharray="10,10"
+          opacity="1"/>
+    <line x1="104.5" y1="162.5" x2="256" y2="81" stroke="#ffffff" stroke-width="10" stroke-dasharray="10,10" opacity="1"/>
+
+    <!-- Connect -->
+    <line x1="256" y1="81" x2="104.5" y2="349.5" stroke="url(#lineGradient)" stroke-width="10" stroke-linecap="round"
+          filter="url(#glow)" opacity="0.95"/>
+    <line x1="256" y1="81" x2="407.5" y2="349.5" stroke="url(#lineGradient)" stroke-width="10" stroke-linecap="round"
+          filter="url(#glow)" opacity="0.95"/>
+    <line x1="256" y1="431" x2="104.5" y2="162.5" stroke="url(#lineGradient)" stroke-width="10" stroke-linecap="round"
+          filter="url(#glow)" opacity="0.95"/>
+    <line x1="256" y1="431" x2="407.5" y2="162.5" stroke="url(#lineGradient)" stroke-width="10" stroke-linecap="round"
+          filter="url(#glow)" opacity="0.95"/>
+
+    <!-- Node -->
+    <!-- Up -->
+    <circle cx="256" cy="81" r="22" fill="url(#nodeGradient)" filter="url(#strongGlow)"/>
+    <circle cx="256" cy="81" r="12" fill="#ffffff" opacity="0.9"/>
+    <!-- Right Up -->
+    <circle cx="407.5" cy="162.5" r="22" fill="url(#nodeGradient)" filter="url(#glow)"/>
+    <circle cx="407.5" cy="162.5" r="12" fill="#ffffff" opacity="0.9"/>
+    <!-- Right Down -->
+    <circle cx="407.5" cy="349.5" r="22" fill="url(#nodeGradient)" filter="url(#glow)"/>
+    <circle cx="407.5" cy="349.5" r="12" fill="#ffffff" opacity="0.9"/>
+    <!-- Down -->
+    <circle cx="256" cy="431" r="22" fill="url(#nodeGradient)" filter="url(#strongGlow)"/>
+    <circle cx="256" cy="431" r="12" fill="#ffffff" opacity="0.9"/>
+    <!-- Left Down -->
+    <circle cx="104.5" cy="349.5" r="22" fill="url(#nodeGradient)" filter="url(#glow)"/>
+    <circle cx="104.5" cy="349.5" r="12" fill="#ffffff" opacity="0.9"/>
+    <!-- Left Up -->
+    <circle cx="104.5" cy="162.5" r="22" fill="url(#nodeGradient)" filter="url(#glow)"/>
+    <circle cx="104.5" cy="162.5" r="12" fill="#ffffff" opacity="0.9"/>
+
+    <!-- Center -->
+    <path transform="translate(192, 192) scale(0.125)" fill="#ffffff"
+          d="M593.567553 0.00128a372.002648 372.002648 0 0 0-354.426376 261.894983c44.793897-21.97034 93.000662-36.048422 142.572575-41.636993 103.025963-143.468452 315.690321-145.558834 421.489238-4.138103s43.727375 344.870345-122.991242 403.145071a260.23121 260.23121 0 0 1-12.798256 117.829279 371.149431 371.149431 0 0 0 128.40917-52.259546A372.002648 372.002648 0 0 0 593.610214 0.00128z m3.49819 275.20517a97.437391 97.437391 0 1 0-6.399128 194.78946 97.437391 97.437391 0 0 0 6.399128-194.78946m-240.137948 11.51843a371.149431 371.149431 0 0 0-129.305049 52.686155 372.002648 372.002648 0 1 0 557.150755 422.897047 435.140712 435.140712 0 0 1-142.615235 41.167724 261.297732 261.297732 0 1 1-299.820483-398.58036 260.871123 260.828462 90 0 1 14.590012-118.255887z m73.078043 267.483556a97.437391 97.437391 0 0 0-97.43739 97.39473 97.437391 97.437391 0 0 0 97.43739 97.437391 97.437391 97.437391 0 0 0 97.437391-97.437391 97.437391 97.437391 0 0 0-97.437391-97.437391z"/>
+</svg>
+
+   

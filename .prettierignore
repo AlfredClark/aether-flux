@@ -1,0 +1,17 @@
+# Package Managers
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+bun.lock
+bun.lockb
+
+# Miscellaneous
+/static/
+
+# cargo
+src-tauri/gen/
+
+# Paraglide
+src/lib/i18n/paraglide
+src/lib/i18n/project.inlang
+!src/lib/i18n/project.inlang/settings.json
