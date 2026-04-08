@@ -1,7 +1,7 @@
 {
   "name": "aether-flux",
   "version": "0.1.0",
-  "description": "Build and run tools using visual workflow applications",
+  "description": "A workflow desktop application for commonly used tools",
   "author": "Alfred Clark <alfredclark@163.com> (https://github.com/AlfredClark)",
   "homepage": "https://github.com/AlfredClark/aether-flux#readme",
   "repository": {
@@ -22,10 +22,10 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "machine-translate": "inlang machine translate --project ./src/lib/i18n/project.inlang",
+    "machine-translate": "inlang machine translate --project ./src/lib/i18n/project.inlang --locale en --targetLocales zh",
     "format": "prettier --write .",
     "lint": "prettier --check . && eslint . && stylelint \"**/*.css\"",
-    "icon": "tauri icon -o ./src-tauri/icons ./static/app-icon.svg",
+    "gen:icon": "tauri icon -o ./src-tauri/icons ./static/app-icon.svg",
     "clean": "rimraf src-tauri/target"
   },
   "dependencies": {
@@ -35,12 +35,11 @@
   "devDependencies": {
     "@eslint/compat": "^2",
     "@eslint/js": "^10",
+    "@inlang/cli": "^3",
     "@inlang/paraglide-js": "^2",
     "@sveltejs/adapter-static": "^3",
     "@sveltejs/kit": "^2",
     "@sveltejs/vite-plugin-svelte": "^7",
-    "@tailwindcss/forms": "^0",
-    "@tailwindcss/typography": "^0",
     "@tailwindcss/vite": "^4",
     "@tauri-apps/cli": "^2",
     "@types/node": "^24",
@@ -60,7 +59,6 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "typescript-eslint": "^8",
-    "vite": "^8",
-    "@inlang/cli": "^3"
+    "vite": "^8"
   }
 }

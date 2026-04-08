@@ -1,5 +1,13 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "hello_world": "Hello, {name} from en!",
-  "description": "Build and run tools using visual workflow applications"
+  "app_name": "Aether Flux",
+  "app_description": "A workflow desktop application for commonly used tools",
+  "window_minimize": "minimize window",
+  "window_maximize": "maximize window",
+  "window_close": "close window",
+  "home": "Home",
+  "toolbox": "Toolbox",
+  "plugins": "Plugins",
+  "settings": "Settings",
+  "about": "About"
 }

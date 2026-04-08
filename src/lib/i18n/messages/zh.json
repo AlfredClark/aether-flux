@@ -1,5 +1,13 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "hello_world": "你好，{name}，来自zh！",
-  "description": "使用可视化工作流应用程序构建和运行工具"
+  "app_name": "Aether Flux",
+  "app_description": "一款用于常用工具的工作流程桌面应用程序",
+  "window_minimize": "最小化窗口",
+  "window_maximize": "最大化窗口",
+  "window_close": "关闭窗口",
+  "home": "主页",
+  "toolbox": "工具",
+  "plugins": "插件",
+  "settings": "设置",
+  "about": "关于"
 }

@@ -5,14 +5,20 @@ import svelte from "eslint-plugin-svelte";
 import { defineConfig } from "eslint/config";
 import globals from "globals";
 import ts from "typescript-eslint";
+import eslint from "@eslint/js";
+import tseslint from "typescript-eslint";
+import prettierConfig from "eslint-config-prettier";
 import svelteConfig from "./svelte.config.ts";
 
 const gitignorePath = path.resolve(import.meta.dirname, ".gitignore");
 
 export default defineConfig(
   includeIgnoreFile(gitignorePath),
+  eslint.configs.recommended,
+  tseslint.configs.recommended,
   js.configs.recommended,
   ts.configs.recommended,
+  prettierConfig,
   svelte.configs.recommended,
   {
     languageOptions: { globals: { ...globals.browser, ...globals.node } },
@@ -26,7 +32,7 @@ export default defineConfig(
     files: ["**/*.svelte", "**/*.svelte.ts", "**/*.svelte.js"],
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: false,
         extraFileExtensions: [".svelte"],
         parser: ts.parser,
         svelteConfig

@@ -2,6 +2,11 @@ import { paraglideVitePlugin } from "@inlang/paraglide-js";
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 import tailwindcss from "@tailwindcss/vite";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const file = fileURLToPath(new URL("package.json", import.meta.url));
+const pkg = JSON.parse(readFileSync(file, "utf8"));
 
 const host = process.env.TAURI_DEV_HOST || "localhost";
 
@@ -25,5 +30,8 @@ export default defineConfig({
     watch: { ignored: ["**/src-tauri/**"] },
     open: false
   },
-  envPrefix: ["VITE_", "TAURI_ENV_*"]
+  envPrefix: ["VITE_", "TAURI_ENV_*"],
+  define: {
+    __APP_PKG__: pkg
+  }
 });
