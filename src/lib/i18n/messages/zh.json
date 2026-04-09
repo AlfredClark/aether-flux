@@ -9,5 +9,14 @@
   "toolbox": "工具",
   "plugins": "插件",
   "settings": "设置",
-  "about": "关于"
+  "about": "关于",
+  "info": "信息",
+  "warning": "警告",
+  "error": "错误",
+  "success": "成功",
+  "failed": "失败",
+  "suspend": "中止",
+  "complete": "完成",
+  "confirm": "确认",
+  "cancel": "取消"
 }

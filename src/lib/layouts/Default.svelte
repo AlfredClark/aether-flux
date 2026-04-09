@@ -4,7 +4,7 @@
   import { m } from "$lib/i18n/paraglide/messages";
   import type { PathnameWithSearchOrHash } from "$app/types";
   import WindowControl from "$lib/components/WindowControl.svelte";
-  import { getRouter } from "$lib/utils/router";
+  import { getRouter } from "$lib/router";
   import { goto } from "$app/navigation";
   import { resolve } from "$app/paths";
 
@@ -12,7 +12,7 @@
 
   const router = getRouter();
   let version = $state(__APP_PKG__.version);
-  let path: PathnameWithSearchOrHash = $state("/home");
+  let path: PathnameWithSearchOrHash = $state("/");
 
   $effect(() => {
     goto(resolve(path));
@@ -36,16 +36,16 @@
   </header>
 
   <nav class="navbar-center">
-    <div class="tabs-border tabs grid w-2/5 grid-cols-{router.length}">
+    <div class="tabs-border tabs grid w-2/5 grid-cols-5">
       {#each router as route (route.path)}
         <input
           type="radio"
           name="nav_tabs"
           class="tab"
           bind:group={path}
-          aria-label={route.name}
+          aria-label={route.label}
           value={route.path}
-          checked={route.default}
+          checked={route.home}
         />
       {/each}
     </div>

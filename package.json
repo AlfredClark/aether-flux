@@ -26,7 +26,7 @@
     "format": "prettier --write .",
     "lint": "prettier --check . && eslint . && stylelint \"**/*.css\"",
     "gen:icon": "tauri icon -o ./src-tauri/icons ./static/app-icon.svg",
-    "clean": "rimraf src-tauri/target"
+    "clean": "rimraf src-tauri/target build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

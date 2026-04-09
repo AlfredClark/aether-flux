@@ -4,6 +4,7 @@
   import CloseIcon from "$lib/icons/CloseIcon.svelte";
   import MinimizeIcon from "$lib/icons/MinimizeIcon.svelte";
   import MaximizeIcon from "$lib/icons/MaximizeIcon.svelte";
+  import { openModal } from "$lib/stores/modal";
 
   function minimizeWindow() {
     window.getCurrentWindow().minimize();
@@ -14,7 +15,16 @@
   }
 
   function closeWindow() {
-    window.getCurrentWindow().close();
+    openModal({
+      title: m.warning(),
+      backdrop: true,
+      type: "warning",
+      message: "Application will be closed.",
+      cancelText: m.cancel(),
+      onConfirm: () => {
+        window.getCurrentWindow().close();
+      }
+    });
   }
 </script>
 

@@ -9,5 +9,14 @@
   "toolbox": "Toolbox",
   "plugins": "Plugins",
   "settings": "Settings",
-  "about": "About"
+  "about": "About",
+  "info": "Info",
+  "warning": "Warning",
+  "error": "Error",
+  "success": "Success",
+  "failed": "Failed",
+  "suspend": "Suspend",
+  "complete": "Complete",
+  "confirm": "Confirm",
+  "cancel": "Cancel"
 }
