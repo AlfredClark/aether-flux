@@ -51,7 +51,7 @@
     </div>
   </nav>
 
-  <main class="flex h-full w-full items-center justify-center">
+  <main class="flex flex-col items-center h-full w-full overflow-y-auto bg-base-300">
     {@render children?.()}
   </main>
 

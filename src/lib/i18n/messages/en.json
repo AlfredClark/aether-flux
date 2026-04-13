@@ -5,6 +5,7 @@
   "window_minimize": "minimize window",
   "window_maximize": "maximize window",
   "window_close": "close window",
+  "window_always_on_top": "window always on top",
   "home": "Home",
   "toolbox": "Toolbox",
   "plugins": "Plugins",

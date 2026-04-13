@@ -1,34 +1,42 @@
 <script lang="ts">
-  import { window } from "@tauri-apps/api";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { m } from "$lib/i18n/paraglide/messages";
   import CloseIcon from "$lib/icons/CloseIcon.svelte";
   import MinimizeIcon from "$lib/icons/MinimizeIcon.svelte";
   import MaximizeIcon from "$lib/icons/MaximizeIcon.svelte";
   import { openModal } from "$lib/stores/modal";
+  import AlwaysOnTop from "$lib/icons/AlwaysOnTop.svelte";
 
-  function minimizeWindow() {
-    window.getCurrentWindow().minimize();
+  async function toggleAlwaysOnTop() {
+    await getCurrentWindow().setAlwaysOnTop(!await getCurrentWindow().isAlwaysOnTop())
   }
 
-  function toggleMaximizeWindow() {
-    window.getCurrentWindow().toggleMaximize();
+  async function minimizeWindow() {
+    await getCurrentWindow().minimize();
   }
 
-  function closeWindow() {
+  async function toggleMaximizeWindow() {
+    await getCurrentWindow().toggleMaximize();
+  }
+
+  async function closeWindow() {
     openModal({
       title: m.warning(),
       backdrop: true,
       type: "warning",
       message: "Application will be closed.",
       cancelText: m.cancel(),
-      onConfirm: () => {
-        window.getCurrentWindow().close();
+      onConfirm: async () => {
+         await getCurrentWindow().close();
       }
     });
   }
 </script>
 
-<div class="grid grid-cols-3 gap-3">
+<div class="grid grid-cols-4 gap-3">
+  <button title={m.window_always_on_top()} class="btn btn-circle btn-sm" onclick={toggleAlwaysOnTop}>
+    <AlwaysOnTop className="size-6" />
+  </button>
   <button title={m.window_minimize()} class="btn btn-circle btn-sm" onclick={minimizeWindow}>
     <MinimizeIcon className="size-6" />
   </button>
