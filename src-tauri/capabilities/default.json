@@ -6,6 +6,7 @@
   "permissions": [
     "fs:default",
     "opener:default",
+    "system-fonts:default",
     "core:default",
     "core:window:default",
     "core:window:allow-close",

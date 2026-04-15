@@ -4,12 +4,6 @@
   themes: "all";
 }
 
-body {
-  font-family:
-    "Noto Sans CJK SC Medium", "Microsoft YaHei UI", "Helvetica Neue", Helvetica, "Segoe UI",
-    Roboto, Arial, sans-serif;
-}
-
 :focus {
   outline: none;
 }

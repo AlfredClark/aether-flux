@@ -42,11 +42,7 @@
 </script>
 
 <div class="grid grid-cols-4 gap-3">
-  <button
-    title={m.window_always_on_top()}
-    class="btn btn-circle btn-sm"
-    onclick={toggleAlwaysOnTop}
-  >
+  <button title={m.window_always_on_top()} class="btn btn-circle btn-sm" onclick={toggleAlwaysOnTop}>
     <AlwaysOnTop className="size-6" {isTop} />
   </button>
   <button title={m.window_minimize()} class="btn btn-circle btn-sm" onclick={minimizeWindow}>

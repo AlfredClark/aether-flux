@@ -1,28 +1,19 @@
 <script lang="ts">
-  export let theme: string = 'light'
-  export let className: string = ''
+  export let theme: string = "light";
 </script>
 
-<div
-  class="overflow-hidden rounded-lg border border-base-content/20 outline-2 outline-offset-2 outline-transparent hover:border-base-content/40 {className}"
-  data-act-class="outline-base-content!"
-  data-set-theme="{theme}"
->
-  <div class="w-full cursor-pointer bg-base-100 font-sans text-base-content" data-theme="{theme}">
+<div class="overflow-hidden rounded-lg border border-base-content/20 outline-2 outline-offset-2 outline-transparent hover:border-base-content/40" data-act-class="outline-base-content!" data-set-theme={theme}>
+  <div class="w-full cursor-pointer bg-base-100 text-base-content" data-theme={theme}>
     <div class="grid grid-cols-5 grid-rows-3">
       <div class="col-start-1 row-span-2 row-start-1 bg-base-200"></div>
       <div class="col-start-1 row-start-3 bg-base-300"></div>
-      <div
-        class="col-span-4 col-start-2 row-span-3 row-start-1 flex flex-col gap-1 bg-base-100 p-2"
-      >
+      <div class="col-span-4 col-start-2 row-span-3 row-start-1 flex flex-col gap-1 bg-base-100 p-2">
         <div class="font-bold">{theme.charAt(0).toUpperCase() + theme.slice(1)}</div>
         <div class="flex flex-wrap gap-1">
           <div class="flex aspect-square w-5 items-center justify-center rounded bg-primary lg:w-6">
             <div class="text-sm font-bold text-primary-content">A</div>
           </div>
-          <div
-            class="flex aspect-square w-5 items-center justify-center rounded bg-secondary lg:w-6"
-          >
+          <div class="flex aspect-square w-5 items-center justify-center rounded bg-secondary lg:w-6">
             <div class="text-sm font-bold text-secondary-content">A</div>
           </div>
           <div class="flex aspect-square w-5 items-center justify-center rounded bg-accent lg:w-6">

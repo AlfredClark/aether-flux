@@ -25,5 +25,6 @@
   "general_settings": "General Settings",
   "language": "Language",
   "theme": "Theme",
-  "appearance_settings": "Appearance Settings"
+  "appearance_settings": "Appearance Settings",
+  "font_family": "Font Family"
 }

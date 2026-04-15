@@ -7,7 +7,6 @@
   class="btn btn-primary"
   onclick={() => {
     openModal({ title: m.info(), type: "info", message: "Demo Modal!" });
-  }}
->
+  }}>
   Open Modal
 </button>

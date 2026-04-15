@@ -3,8 +3,8 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { m } from "$lib/i18n/paraglide/messages";
   import type { Pathname } from "$app/types";
-  import WindowControl from "$lib/components/WindowControl.svelte";
-  import { getRouter } from "$lib/router";
+  import WindowControl from "$lib/components/widgets/WindowControl.svelte";
+  import { getRouter } from "$lib/routers";
   import { goto } from "$app/navigation";
   import { resolve } from "$app/paths";
 
@@ -15,7 +15,7 @@
   let path: Pathname = $state(window.location.pathname as Pathname);
 
   $effect(() => {
-    goto(resolve(path))
+    goto(resolve(path));
   });
 
   onMount(async () => {
@@ -38,15 +38,7 @@
   <nav class="navbar-center">
     <div class="tabs-border tabs grid w-2/5 grid-cols-5">
       {#each router as route (route.path)}
-        <input
-          type="radio"
-          name="nav_tabs"
-          class="tab text-base 2xl:text-lg"
-          bind:group={path}
-          aria-label={route.label}
-          value={route.path}
-          checked={route.home}
-        />
+        <input type="radio" name="nav_tabs" class="tab text-base 2xl:text-lg" bind:group={path} aria-label={route.label} value={route.path} checked={route.home} />
       {/each}
     </div>
   </nav>
