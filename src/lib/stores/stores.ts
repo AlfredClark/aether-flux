@@ -10,8 +10,13 @@ export interface StoresState<T> extends Writable<T> {
  * Create a persisted store.
  * @param key key in localStorage
  * @param defaultValue store default value
+ * @param init init function
  */
-export function persistedStore<T>(key: string, defaultValue: T): StoresState<T> {
+export function persistedStore<T>(
+  key: string,
+  defaultValue: T,
+  init?: (value: T) => void
+): StoresState<T> {
   const isString = typeof defaultValue === "string";
   const persistedValue = localStorage.getItem(key);
   const initialValue: T = persistedValue
@@ -20,6 +25,7 @@ export function persistedStore<T>(key: string, defaultValue: T): StoresState<T> 
       : { ...defaultValue, ...JSON.parse(persistedValue) }
     : defaultValue;
   const store = writable<T>(initialValue);
+  init?.(initialValue);
   store.subscribe((value) => {
     localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value));
   });

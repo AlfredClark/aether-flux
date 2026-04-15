@@ -1,5 +1,7 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
+  "en": "English",
+  "zh": "Simplified Chinese",
   "app_name": "Aether Flux",
   "app_description": "A workflow desktop application for commonly used tools",
   "window_minimize": "minimize window",
@@ -19,5 +21,9 @@
   "suspend": "Suspend",
   "complete": "Complete",
   "confirm": "Confirm",
-  "cancel": "Cancel"
+  "cancel": "Cancel",
+  "general_settings": "General Settings",
+  "language": "Language",
+  "theme": "Theme",
+  "appearance_settings": "Appearance Settings"
 }

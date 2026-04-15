@@ -1,9 +1,9 @@
-import type { PathnameWithSearchOrHash } from "$app/types";
+import type { Pathname } from "$app/types";
 import { m } from "$lib/i18n/paraglide/messages";
 
 type RouterItem = {
   label: string;
-  path: PathnameWithSearchOrHash;
+  path: Pathname;
   home: boolean;
 };
 

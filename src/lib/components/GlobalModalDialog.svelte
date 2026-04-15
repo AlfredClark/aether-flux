@@ -20,7 +20,8 @@
     }
   }
 
-  function handleConfirm() {
+  function handleConfirm(event: MouseEvent) {
+    event.preventDefault();
     $modalStore.options?.onConfirm?.();
     closeModal();
   }
@@ -35,7 +36,7 @@
   });
 </script>
 
-<dialog bind:this={dialogElement} class="modal" on:click={onBackdropClick} on:close={handleCancel}>
+<dialog bind:this={dialogElement} class="modal" onclick={onBackdropClick} onclose={handleCancel}>
   <div class="modal-box">
     <h3 class="text-lg font-bold">
       {$modalStore.options?.title}
@@ -48,7 +49,7 @@
         {#if $modalStore.options?.cancelText || $modalStore.options?.onCancel}
           <button class="btn" value="cancel">{$modalStore.options.cancelText || m.cancel()}</button>
         {/if}
-        <button class="btn btn-primary" on:click|preventDefault={handleConfirm}>
+        <button class="btn btn-primary" onclick={handleConfirm}>
           {$modalStore.options?.confirmText || m.confirm()}
         </button>
       </form>

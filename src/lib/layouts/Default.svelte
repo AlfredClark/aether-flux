@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { m } from "$lib/i18n/paraglide/messages";
-  import type { PathnameWithSearchOrHash } from "$app/types";
+  import type { Pathname } from "$app/types";
   import WindowControl from "$lib/components/WindowControl.svelte";
   import { getRouter } from "$lib/router";
   import { goto } from "$app/navigation";
@@ -12,10 +12,10 @@
 
   const router = getRouter();
   let version = $state(__APP_PKG__.version);
-  let path: PathnameWithSearchOrHash = $state("/");
+  let path: Pathname = $state(window.location.pathname as Pathname);
 
   $effect(() => {
-    goto(resolve(path));
+    goto(resolve(path))
   });
 
   onMount(async () => {
@@ -41,7 +41,7 @@
         <input
           type="radio"
           name="nav_tabs"
-          class="tab"
+          class="tab text-base 2xl:text-lg"
           bind:group={path}
           aria-label={route.label}
           value={route.path}
@@ -51,7 +51,7 @@
     </div>
   </nav>
 
-  <main class="flex flex-col items-center h-full w-full overflow-y-auto bg-base-300">
+  <main class="flex h-full w-full flex-col items-center overflow-y-auto bg-base-300">
     {@render children?.()}
   </main>
 

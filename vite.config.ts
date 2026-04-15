@@ -17,7 +17,7 @@ export default defineConfig({
     paraglideVitePlugin({
       project: "./src/lib/i18n/project.inlang",
       outdir: "./src/lib/i18n/paraglide",
-      strategy: ["localStorage", "preferredLanguage", "url", "baseLocale"]
+      strategy: ["localStorage", "preferredLanguage", "baseLocale"]
     })
   ],
   root: process.cwd(),
