@@ -12,6 +12,10 @@
   settings.font_family.subscribe((value) => {
     document.documentElement.style.setProperty("--font-sans", value);
   });
+
+  settings.font_zoom.subscribe((value) => {
+    document.documentElement.style.setProperty("zoom", value.toString());
+  });
 </script>
 
 <Default>

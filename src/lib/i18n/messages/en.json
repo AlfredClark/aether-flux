@@ -7,6 +7,7 @@
   "window_minimize": "minimize window",
   "window_maximize": "maximize window",
   "window_close": "close window",
+  "window_close_warnning": "Confirm to close the application?",
   "window_always_on_top": "window always on top",
   "home": "Home",
   "toolbox": "Toolbox",
@@ -26,5 +27,8 @@
   "language": "Language",
   "theme": "Theme",
   "appearance_settings": "Appearance Settings",
-  "font_family": "Font Family"
+  "font_family": "Font Family",
+  "font_zoom": "Font Zoom",
+  "restore_settings": "Restore Default Settings",
+  "restore_warnning": "Confirm to restore the default settings?"
 }

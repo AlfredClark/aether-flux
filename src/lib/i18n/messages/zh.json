@@ -7,6 +7,7 @@
   "window_minimize": "最小化窗口",
   "window_maximize": "最大化窗口",
   "window_close": "关闭窗口",
+  "window_close_warnning": "确定关闭程序？",
   "window_always_on_top": "置顶窗口",
   "home": "主页",
   "toolbox": "工具",
@@ -26,5 +27,8 @@
   "language": "语言",
   "theme": "主题",
   "appearance_settings": "外观设置",
-  "font_family": "字体选择"
+  "font_family": "字体类型",
+  "font_zoom": "字体缩放",
+  "restore_settings": "恢复默认设置",
+  "restore_warnning": "确定要恢复默认设置吗？"
 }

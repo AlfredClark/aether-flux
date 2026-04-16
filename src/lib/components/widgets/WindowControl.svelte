@@ -28,7 +28,7 @@
       title: m.warning(),
       backdrop: true,
       type: "warning",
-      message: "Application will be closed.",
+      message: m.window_close_warnning(),
       cancelText: m.cancel(),
       onConfirm: async () => {
         await getCurrentWindow().close();
