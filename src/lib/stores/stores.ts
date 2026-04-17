@@ -77,8 +77,6 @@ export function persistedStore<T>(
 ): StoresState<T> {
   const persistedValue = localStorage.getItem(key);
   const initialValue: T = initFromLocalStorage<T>(defaultValue, persistedValue);
-  console.log(key);
-  console.log(initialValue);
   const store = writable<T>(initialValue);
   init?.(initialValue);
   store.subscribe((value) => {

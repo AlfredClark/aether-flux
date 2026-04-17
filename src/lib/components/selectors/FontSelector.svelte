@@ -42,9 +42,16 @@
   <div class="w-full max-w-md">
     <div class="form-control w-full">
       <div class="relative">
-        <input type="text" bind:value={inputValue} class="input-bordered input w-auto text-center" placeholder={nowFont} onfocus={handleFocus} onblur={handleBlur} />
+        <input
+          type="text"
+          bind:value={inputValue}
+          class="input-bordered input w-auto text-center"
+          placeholder={nowFont}
+          onfocus={handleFocus}
+          onblur={handleBlur} />
         {#if isOpen && filtered.length > 0}
-          <ul class="menu absolute z-50 mt-2 max-h-50 flex-row overflow-x-hidden overflow-y-auto rounded-box border border-base-300 bg-base-200 p-2 shadow">
+          <ul
+            class="menu absolute z-50 mt-2 max-h-50 flex-row overflow-x-hidden overflow-y-auto rounded-box border border-base-300 bg-base-200 p-2 shadow">
             <li class="w-full">
               <button
                 type="button"

@@ -47,10 +47,10 @@
     <div class="modal-action">
       <form method="dialog">
         {#if $modalStore.options?.cancelText || $modalStore.options?.onCancel}
-          <button class="btn" value="cancel">{$modalStore.options.cancelText || m.cancel()}</button>
+          <button class="btn" value="cancel">{$modalStore.options.cancelText || m.msg_cancel()}</button>
         {/if}
         <button class="btn btn-primary" onclick={handleConfirm}>
-          {$modalStore.options?.confirmText || m.confirm()}
+          {$modalStore.options?.confirmText || m.msg_confirm()}
         </button>
       </form>
     </div>

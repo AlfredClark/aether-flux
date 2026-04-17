@@ -10,7 +10,7 @@
       "options": {
         "parser": "svelte",
         "bracketSameLine": true,
-        "printWidth": 256,
+        "printWidth": 128,
         "singleAttributePerLine": false
       }
     }

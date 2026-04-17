@@ -9,11 +9,11 @@
 
   function restoreSettings(): void {
     openModal({
-      title: m.warning(),
+      title: m.msg_warning(),
       backdrop: true,
       type: "warning",
-      message: m.restore_warnning(),
-      cancelText: m.cancel(),
+      message: m.warn_restore(),
+      cancelText: m.msg_cancel(),
       onConfirm: async () => {
         settings.theme.clear();
         settings.font_family.clear();
@@ -25,32 +25,32 @@
 </script>
 
 <ul class="list mt-10 rounded-box bg-base-100 shadow-md xl:w-xl 2xl:w-3xl">
-  <li class="p-4 pb-2 text-center text-xl font-bold tracking-wide">{m.general_settings()}</li>
+  <li class="p-4 pb-2 text-center text-xl font-bold tracking-wide">{m.settings_general()}</li>
   <li class="list-row items-center justify-center">
-    <p class="list-col-grow text-base">{m.language()}</p>
+    <p class="list-col-grow text-base">{m.settings_language()}</p>
     <LanguageSelector />
   </li>
   <li class="list-row items-center justify-center">
-    <p class="list-col-grow text-base">{m.theme()}</p>
+    <p class="list-col-grow text-base">{m.settings_theme()}</p>
     <ThemeSelector />
   </li>
 </ul>
 
 <ul class="list mt-10 rounded-box bg-base-100 shadow-md xl:w-xl 2xl:w-3xl">
-  <li class="p-4 pb-2 text-center text-xl font-bold tracking-wide">{m.appearance_settings()}</li>
+  <li class="p-4 pb-2 text-center text-xl font-bold tracking-wide">{m.settings_appearance()}</li>
   <li class="list-row items-center justify-center">
-    <p class="list-col-grow text-base">{m.font_family()}</p>
+    <p class="list-col-grow text-base">{m.settings_font_family()}</p>
     <FontSelector />
   </li>
   <li class="list-row items-center justify-center">
-    <p class="list-col-grow text-base">{m.font_zoom()}</p>
+    <p class="list-col-grow text-base">{m.settings_font_zoom()}</p>
     <FontZoomSelector />
   </li>
 </ul>
 
 <ul class="list mt-10 rounded-box bg-base-100 shadow-md xl:w-xl 2xl:w-3xl">
   <li class="list-row flex w-full items-center justify-center">
-    <button class="btn w-1/2 btn-error" onclick={restoreSettings}>{m.restore_settings()}</button>
+    <button class="btn w-1/2 btn-error" onclick={restoreSettings}>{m.settings_restore()}</button>
   </li>
 </ul>
 

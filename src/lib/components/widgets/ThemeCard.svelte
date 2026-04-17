@@ -2,7 +2,10 @@
   export let theme: string = "light";
 </script>
 
-<div class="overflow-hidden rounded-lg border border-base-content/20 outline-2 outline-offset-2 outline-transparent hover:border-base-content/40" data-act-class="outline-base-content!" data-set-theme={theme}>
+<div
+  class="overflow-hidden rounded-lg border border-base-content/20 outline-2 outline-offset-2 outline-transparent hover:border-base-content/40"
+  data-act-class="outline-base-content!"
+  data-set-theme={theme}>
   <div class="w-full cursor-pointer bg-base-100 text-base-content" data-theme={theme}>
     <div class="grid grid-cols-5 grid-rows-3">
       <div class="col-start-1 row-span-2 row-start-1 bg-base-200"></div>
