@@ -9,7 +9,6 @@
     "fs:allow-appcache-read-recursive",
     "opener:default",
     "system-fonts:default",
-    "audio-recorder:default",
     "core:default",
     "core:window:default",
     "core:window:allow-close",

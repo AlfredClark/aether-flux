@@ -19,6 +19,7 @@
     error = "";
     devices = await invoke<InputDeviceInfo[]>("list_input_devices");
     selectedId = devices.find((d) => d.is_default)?.id ?? devices[0]?.id ?? "";
+    console.log(devices);
   }
 
   async function startRecording() {
@@ -31,7 +32,8 @@
     try {
       await invoke("start_recording", {
         deviceId: selectedId,
-        outputPath
+        outputPath,
+        sampleRate: 16000
       });
       recording = true;
     } catch (e) {
