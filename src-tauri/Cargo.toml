@@ -27,6 +27,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cpal = "0.17"
 hound = "3"
+anyhow = "1.0.102"
+ndarray = "0.17.2"
+ort = { version = "2.0.0-rc.12", features = ["cuda"] }
+realfft = "3.5.0"
+tokenizers = "0.22.2"
 
 [profile.dev]
 incremental = true

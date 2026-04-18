@@ -10,6 +10,7 @@ bun.lockb
 
 # cargo
 src-tauri/gen/
+src-tauri/resources
 
 # Paraglide
 src/lib/i18n/paraglide
