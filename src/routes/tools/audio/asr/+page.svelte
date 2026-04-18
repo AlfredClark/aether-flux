@@ -13,10 +13,12 @@
   };
 
   type AsrModelKind = "qwen3_asr" | "sense_voice_small";
+  type AsrExecutionMode = "auto" | "only_cpu";
 
   type AsrStatus = {
     isLoaded: boolean;
     currentModel: AsrModelKind | null;
+    currentMode: AsrExecutionMode | null;
   };
 
   type StopRecordingResult = {
@@ -34,14 +36,19 @@
   };
 
   const modelOptions: Array<{ value: AsrModelKind; label: string }> = [
-    { value: "sense_voice_small", label: "SenseVoiceSmall" },
-    { value: "qwen3_asr", label: "Qwen3-ASR" }
+    { value: "sense_voice_small", label: m.tools_audio_asr_model_sense_voice_small() },
+    { value: "qwen3_asr", label: m.tools_audio_asr_model_qwen3_asr() }
+  ];
+  const executionModeOptions: Array<{ value: AsrExecutionMode; label: string }> = [
+    { value: "auto", label: m.tools_audio_asr_execution_mode_auto() },
+    { value: "only_cpu", label: m.tools_audio_asr_execution_mode_only_cpu() }
   ];
 
   let devices: InputDeviceInfo[] = [];
   let selectedId = "";
   let selectedModel: AsrModelKind = "sense_voice_small";
-  let asrStatus: AsrStatus = { isLoaded: false, currentModel: null };
+  let selectedExecutionMode: AsrExecutionMode = "auto";
+  let asrStatus: AsrStatus = { isLoaded: false, currentModel: null, currentMode: null };
   let recording = false;
   let loadingModel = false;
   let recognizing = false;
@@ -49,8 +56,14 @@
   let recognitionText = "";
   let error = "";
 
-  function currentModelLabel() {
-    return modelOptions.find((item) => item.value === selectedModel)?.label ?? selectedModel;
+  function modelLabel(model: AsrModelKind | null) {
+    if (!model) return "";
+    return modelOptions.find((item) => item.value === model)?.label ?? model;
+  }
+
+  function executionModeLabel(mode: AsrExecutionMode | null) {
+    if (!mode) return "";
+    return executionModeOptions.find((item) => item.value === mode)?.label ?? mode;
   }
 
   async function loadDevices() {
@@ -58,16 +71,15 @@
     selectedId = devices.find((device) => device.is_default)?.id ?? devices[0]?.id ?? "";
   }
 
-  // 页面进入时自动加载默认模型，录音按钮会在加载完成后解锁。
-  async function loadAsrModel(model: AsrModelKind) {
+  async function loadAsrModel(model: AsrModelKind, mode: AsrExecutionMode) {
     error = "";
     loadingModel = true;
-    asrStatus = { isLoaded: false, currentModel: model };
+    asrStatus = { isLoaded: false, currentModel: model, currentMode: mode };
 
     try {
-      asrStatus = await invoke<AsrStatus>("load_asr_model", { model });
+      asrStatus = await invoke<AsrStatus>("load_asr_model", { model, mode });
     } catch (e) {
-      asrStatus = { isLoaded: false, currentModel: null };
+      asrStatus = { isLoaded: false, currentModel: null, currentMode: null };
       error = String(e);
     } finally {
       loadingModel = false;
@@ -109,7 +121,7 @@
       const recognition = await invoke<AsrRecognitionResult>("recognize_audio", {
         wavPath: result.file_path
       });
-      recognitionText = recognition.text || "识别完成，但模型返回了空文本。";
+      recognitionText = recognition.text || m.tools_audio_asr_recognition_empty_text();
     } catch (e) {
       error = String(e);
     } finally {
@@ -121,7 +133,7 @@
   async function reloadCurrentModel() {
     if (recording || recognizing) return;
     recognitionText = "";
-    await loadAsrModel(selectedModel);
+    await loadAsrModel(selectedModel, selectedExecutionMode);
   }
 
   async function destroyAsrModel() {
@@ -138,11 +150,10 @@
     void (async () => {
       try {
         await loadDevices();
-        if (!disposed) {
-          await loadAsrModel(selectedModel);
-        }
       } catch (e) {
-        error = String(e);
+        if (!disposed) {
+          error = String(e);
+        }
       }
     })();
 
@@ -154,31 +165,44 @@
   });
 </script>
 
-<div class="tabs-lift tabs h-full w-full">
+<div class="tabs-lift tabs flex h-full w-full flex-wrap content-start overflow-hidden">
   <input type="radio" name="asr_tabs" class="tab px-10" aria-label={m.tools_audio_asr_use()} checked />
-  <div class="tab-content border-base-300 bg-base-100 p-6">
-    <div class="mx-auto flex max-w-4xl flex-col gap-6">
-      <div class="card border border-base-300 bg-base-100 shadow-md">
-        <div class="card-body gap-4">
-          <div class="flex flex-col gap-4 lg:flex-row">
-            <label class="form-control w-full">
+  <div class="tab-content order-last min-h-0 flex-1 basis-full overflow-hidden border-base-300 bg-base-100 p-6">
+    <div class="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-col">
+      <div class="card h-full min-h-0 border border-base-300 bg-base-100 shadow-md">
+        <div class="card-body flex min-h-0 gap-4 overflow-hidden">
+          <div class="max-h-6xl flex flex-col gap-4 lg:flex-row">
+            <div class="form-control w-full">
               <div class="label">
-                <span class="label-text">ASR 模型</span>
+                <span class="label-text">{m.tools_audio_asr_model_label()}</span>
               </div>
               <select
                 class="select-bordered select w-full"
                 bind:value={selectedModel}
-                disabled={loadingModel || recording || recognizing}
-                on:change={() => void reloadCurrentModel()}>
+                disabled={loadingModel || recording || recognizing}>
                 {#each modelOptions as model (model.value)}
                   <option value={model.value}>{model.label}</option>
                 {/each}
               </select>
-            </label>
+            </div>
 
-            <label class="form-control w-full">
+            <div class="form-control w-full">
               <div class="label">
-                <span class="label-text">录音设备</span>
+                <span class="label-text">{m.tools_audio_asr_execution_mode_label()}</span>
+              </div>
+              <select
+                class="select-bordered select w-full"
+                bind:value={selectedExecutionMode}
+                disabled={loadingModel || recording || recognizing}>
+                {#each executionModeOptions as mode (mode.value)}
+                  <option value={mode.value}>{mode.label}</option>
+                {/each}
+              </select>
+            </div>
+
+            <div class="form-control w-full">
+              <div class="label">
+                <span class="label-text">{m.tools_audio_asr_device_label()}</span>
               </div>
               <select
                 class="select-bordered select w-full"
@@ -186,21 +210,27 @@
                 disabled={recording || loadingModel || recognizing}>
                 {#each devices as device (device.id)}
                   <option value={device.id}>
-                    {device.name}{device.is_default ? "（默认）" : ""}
+                    {device.name}{device.is_default ? ` (${m.tools_audio_asr_device_default()})` : ""}
                   </option>
                 {/each}
               </select>
-            </label>
+            </div>
           </div>
 
           <div class="flex flex-wrap items-center gap-3">
             <div class="badge badge-outline p-4">
               {#if loadingModel}
-                正在加载 {currentModelLabel()}
+                {m.tools_audio_asr_status_loading({
+                  model: modelLabel(selectedModel),
+                  mode: executionModeLabel(selectedExecutionMode)
+                })}
               {:else if asrStatus.isLoaded}
-                当前模型已就绪：{currentModelLabel()}
+                {m.tools_audio_asr_status_ready({
+                  model: modelLabel(asrStatus.currentModel),
+                  mode: executionModeLabel(asrStatus.currentMode)
+                })}
               {:else}
-                模型未加载
+                {m.tools_audio_asr_status_unloaded()}
               {/if}
             </div>
 
@@ -208,7 +238,7 @@
               class="btn btn-secondary"
               on:click={() => void reloadCurrentModel()}
               disabled={loadingModel || recording || recognizing}>
-              重新加载模型
+              {asrStatus.isLoaded ? m.tools_audio_asr_reload_model() : m.tools_audio_asr_load_model()}
             </button>
           </div>
 
@@ -218,11 +248,11 @@
                 class="btn btn-primary"
                 on:click={() => void startRecording()}
                 disabled={!selectedId || !asrStatus.isLoaded || loadingModel || recognizing}>
-                开始录音
+                {m.tools_audio_asr_start_recording()}
               </button>
             {:else}
               <button class="btn btn-error" on:click={() => void stopRecording()} disabled={recognizing}>
-                停止录音并识别
+                {m.tools_audio_asr_stop_and_recognize()}
               </button>
             {/if}
 
@@ -232,25 +262,25 @@
           </div>
 
           {#if error}
-            <div class="alert alert-error">
+            <div class="alert shrink-0 alert-error">
               <span>{error}</span>
             </div>
           {/if}
 
           {#if audioUrl}
-            <div class="space-y-2">
-              <div class="text-sm font-medium">录音回放</div>
+            <div class="shrink-0 space-y-2">
+              <div class="text-sm font-medium">{m.tools_audio_asr_audio_playback()}</div>
               <audio class="w-full" controls src={audioUrl}></audio>
             </div>
           {/if}
 
-          <div class="space-y-2">
-            <div class="text-sm font-medium">识别结果</div>
+          <div class="flex min-h-0 flex-1 flex-col space-y-2">
+            <div class="shrink-0 text-sm font-medium">{m.tools_audio_asr_result_label()}</div>
             <textarea
-              class="textarea-bordered textarea min-h-40 w-full"
+              class="textarea-bordered textarea h-full min-h-0 w-full flex-1 resize-none"
               bind:value={recognitionText}
               readonly
-              placeholder="完成录音后，这里会显示识别文本。"></textarea>
+              placeholder={m.tools_audio_asr_result_placeholder()}></textarea>
           </div>
         </div>
       </div>
@@ -258,10 +288,14 @@
   </div>
 
   <input type="radio" name="asr_tabs" class="tab px-10" aria-label={m.tools_audio_asr_word_bank()} />
-  <div class="tab-content border-base-300 bg-base-100 p-6">词库功能待补充</div>
+  <div class="tab-content order-last min-h-0 flex-1 basis-full overflow-hidden border-base-300 bg-base-100 p-6">
+    字库功能待实现
+  </div>
 
   <input type="radio" name="asr_tabs" class="tab px-10" aria-label={m.tools_audio_asr_settings()} />
-  <div class="tab-content border-base-300 bg-base-100 p-6">当前页面设置待补充</div>
+  <div class="tab-content order-last min-h-0 flex-1 basis-full overflow-hidden border-base-300 bg-base-100 p-6">
+    设置功能待实现
+  </div>
 
-  <a class="btn ml-auto px-10 btn-error" href={resolve("/tools")}>{m.msg_back()}</a>
+  <a class="btn ml-auto shrink-0 px-10 btn-error" href={resolve("/tools")}>{m.msg_back()}</a>
 </div>

@@ -1,5 +1,6 @@
 mod qwen3_asr;
 mod sensevoice_small;
+mod utils;
 
 use std::{
     path::{Path, PathBuf},
@@ -10,8 +11,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{async_runtime, AppHandle, Manager, State};
 
 use self::{
-    qwen3_asr::{Qwen3AsrLoader, Qwen3AsrLoaderConfig},
-    sensevoice_small::{SenseVoiceSmallLoader, SenseVoiceSmallLoaderConfig},
+    qwen3_asr::{
+        ExecutionMode as Qwen3ExecutionMode, Qwen3AsrLoader, Qwen3AsrLoaderConfig,
+    },
+    sensevoice_small::{
+        ExecutionMode as SenseVoiceExecutionMode, SenseVoiceSmallLoader, SenseVoiceSmallLoaderConfig,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +25,13 @@ pub enum AsrModelKind {
     Qwen3Asr,
     #[serde(alias = "sensevoice_small")]
     SenseVoiceSmall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AsrExecutionMode {
+    Auto,
+    OnlyCpu,
 }
 
 #[derive(Default)]
@@ -31,6 +43,7 @@ pub struct AsrState {
 #[derive(Default)]
 pub(crate) struct AsrStateInner {
     pub(crate) current_model: Option<AsrModelKind>,
+    pub(crate) current_mode: Option<AsrExecutionMode>,
     pub(crate) runtime: Option<AsrRuntime>,
 }
 
@@ -44,7 +57,7 @@ impl AsrRuntime {
     fn recognize_wav_text(&mut self, wav_path: &Path) -> Result<String, String> {
         match self {
             Self::Qwen3(loader) => loader
-                .recognize_wav(wav_path)
+                .recognize_wav_text(wav_path)
                 .map_err(|err| format!("Qwen3-ASR 识别失败: {err:#}")),
             Self::SenseVoiceSmall(loader) => loader
                 .recognize_wav_text(wav_path)
@@ -58,6 +71,7 @@ impl AsrRuntime {
 pub struct AsrStatus {
     pub is_loaded: bool,
     pub current_model: Option<AsrModelKind>,
+    pub current_mode: Option<AsrExecutionMode>,
 }
 
 impl AsrStatus {
@@ -65,6 +79,7 @@ impl AsrStatus {
         Self {
             is_loaded: inner.runtime.is_some(),
             current_model: inner.current_model,
+            current_mode: inner.current_mode,
         }
     }
 }
@@ -90,11 +105,12 @@ pub fn get_asr_status(asr_state: State<'_, AsrState>) -> Result<AsrStatus, Strin
 #[tauri::command]
 pub async fn load_asr_model(
     model: AsrModelKind,
+    mode: AsrExecutionMode,
     app: AppHandle,
     asr_state: State<'_, AsrState>,
 ) -> Result<AsrStatus, String> {
     let state = Arc::clone(&asr_state.inner);
-    let runtime = async_runtime::spawn_blocking(move || build_runtime(&app, model))
+    let runtime = async_runtime::spawn_blocking(move || build_runtime(&app, model, mode))
         .await
         .map_err(|err| format!("Failed to join ASR loader task: {err}"))??;
 
@@ -102,6 +118,7 @@ pub async fn load_asr_model(
         .lock()
         .map_err(|_| "Failed to lock ASR state".to_string())?;
     guard.current_model = Some(model);
+    guard.current_mode = Some(mode);
     guard.runtime = Some(runtime);
 
     Ok(AsrStatus::from_inner(&guard))
@@ -115,6 +132,7 @@ pub fn destroy_asr_model(asr_state: State<'_, AsrState>) -> Result<(), String> {
         .lock()
         .map_err(|_| "Failed to lock ASR state".to_string())?;
     guard.current_model = None;
+    guard.current_mode = None;
     guard.runtime = None;
     Ok(())
 }
@@ -150,18 +168,26 @@ pub async fn recognize_audio(
     .map_err(|err| format!("Failed to join ASR recognition task: {err}"))?
 }
 
-fn build_runtime(app: &AppHandle, model: AsrModelKind) -> Result<AsrRuntime, String> {
+fn build_runtime(app: &AppHandle, model: AsrModelKind, mode: AsrExecutionMode) -> Result<AsrRuntime, String> {
     match model {
         AsrModelKind::Qwen3Asr => {
             let root = resolve_model_root(app, "Qwen3-ASR-onnx")?;
-            let config = Qwen3AsrLoaderConfig::from_root(root, "model_0.6B");
+            let mut config = Qwen3AsrLoaderConfig::from_root(root, "model_0.6B");
+            config.execution_mode = match mode {
+                AsrExecutionMode::Auto => Qwen3ExecutionMode::Auto,
+                AsrExecutionMode::OnlyCpu => Qwen3ExecutionMode::CpuOnly,
+            };
             let loader = Qwen3AsrLoader::new(config)
                 .map_err(|err| format!("Qwen3-ASR 加载失败: {err:#}"))?;
             Ok(AsrRuntime::Qwen3(loader))
         }
         AsrModelKind::SenseVoiceSmall => {
             let root = resolve_model_root(app, "SenseVoiceSmall-onnx")?;
-            let config = SenseVoiceSmallLoaderConfig::from_root(root);
+            let mut config = SenseVoiceSmallLoaderConfig::from_root(root);
+            config.execution_mode = match mode {
+                AsrExecutionMode::Auto => SenseVoiceExecutionMode::Auto,
+                AsrExecutionMode::OnlyCpu => SenseVoiceExecutionMode::CpuOnly,
+            };
             let loader = SenseVoiceSmallLoader::new(config)
                 .map_err(|err| format!("SenseVoiceSmall 加载失败: {err:#}"))?;
             Ok(AsrRuntime::SenseVoiceSmall(loader))

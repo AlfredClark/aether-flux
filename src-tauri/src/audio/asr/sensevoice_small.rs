@@ -6,13 +6,14 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
-use ndarray::{Array1, Array2, Axis, Ix1, Ix3, s};
+use crate::audio::asr::utils;
+use anyhow::{anyhow, bail, ensure, Context, Result};
+use ndarray::{s, Array1, Array2, Axis, Ix1, Ix3};
 use ort::{
     ep::{self, ExecutionProvider},
     session::{
-        Session,
         builder::{GraphOptimizationLevel, SessionBuilder},
+        Session,
     },
     value::TensorRef,
 };
@@ -70,10 +71,10 @@ impl SenseVoiceSmallLoaderConfig {
 
 #[derive(Debug, Clone)]
 pub struct SenseVoiceSmallResult {
-    pub raw_text: String,
+    // pub raw_text: String,
     pub text: String,
-    pub special_tokens: Vec<String>,
-    pub token_ids: Vec<usize>,
+    // pub special_tokens: Vec<String>,
+    // pub token_ids: Vec<usize>,
 }
 
 pub struct SenseVoiceSmallLoader {
@@ -115,9 +116,10 @@ impl SenseVoiceSmallLoader {
 
     pub fn recognize_wav(&mut self, wav_path: impl AsRef<Path>) -> Result<SenseVoiceSmallResult> {
         let wav_path = wav_path.as_ref();
-        let samples = load_wav_mono(wav_path, self.frontend.sample_rate)?;
+        let samples = utils::load_wav_mono(wav_path, self.frontend.sample_rate)?;
         let speech = self.frontend.extract(&samples)?;
-        let speech_len = i32::try_from(speech.len_of(Axis(0))).context("speech length overflowed i32")?;
+        let speech_len =
+            i32::try_from(speech.len_of(Axis(0))).context("speech length overflowed i32")?;
         let speech = speech.insert_axis(Axis(0));
         let speech_lengths = Array1::from_vec(vec![speech_len]);
         let language = Array1::from_vec(vec![self.language_id]);
@@ -144,7 +146,8 @@ impl SenseVoiceSmallLoader {
             .to_owned();
         drop(outputs);
 
-        let valid_frames = usize::try_from(encoder_out_lens[0]).context("encoder_out_lens was negative")?;
+        let valid_frames =
+            usize::try_from(encoder_out_lens[0]).context("encoder_out_lens was negative")?;
         let valid_frames = valid_frames.min(logits.len_of(Axis(1)));
 
         self.decode_ctc(logits.slice(s![0, 0..valid_frames, ..]))
@@ -160,7 +163,7 @@ impl SenseVoiceSmallLoader {
         let mut previous_id = None;
 
         for frame in logits.axis_iter(Axis(0)) {
-            let token_id = argmax(frame);
+            let token_id = utils::argmax(frame);
             if token_id != self.blank_id && Some(token_id) != previous_id {
                 token_ids.push(token_id);
             }
@@ -188,13 +191,12 @@ impl SenseVoiceSmallLoader {
             }
         }
 
-        let raw_text = raw_tokens.join("");
         let text = decode_sentencepiece(&text_tokens);
         Ok(SenseVoiceSmallResult {
-            raw_text,
+            // raw_text,
             text,
-            special_tokens,
-            token_ids,
+            // special_tokens,
+            // token_ids,
         })
     }
 }
@@ -215,7 +217,11 @@ fn decode_sentencepiece(tokens: &[String]) -> String {
             text.push_str(token);
         }
     }
-    text.split_whitespace().collect::<Vec<_>>().join(" ").trim().to_string()
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
 }
 
 fn build_session(config: &SenseVoiceSmallLoaderConfig, path: impl AsRef<Path>) -> Result<Session> {
@@ -230,7 +236,9 @@ fn build_session(config: &SenseVoiceSmallLoaderConfig, path: impl AsRef<Path>) -
     let builder = builder
         .with_inter_threads(config.inter_threads)
         .map_err(ort_builder_error)?;
-    let builder = builder.with_memory_pattern(false).map_err(ort_builder_error)?;
+    let builder = builder
+        .with_memory_pattern(false)
+        .map_err(ort_builder_error)?;
     let mut builder = configure_execution_providers(builder, config)?;
     builder
         .commit_from_file(path)
@@ -270,59 +278,6 @@ fn ort_builder_error(error: ort::Error<SessionBuilder>) -> anyhow::Error {
     anyhow!(error.to_string())
 }
 
-fn load_wav_mono(path: &Path, expected_sample_rate: usize) -> Result<Vec<f32>> {
-    let mut reader = hound::WavReader::open(path)
-        .with_context(|| format!("failed to open wav file {}", path.display()))?;
-    let spec = reader.spec();
-    ensure!(
-        spec.sample_rate as usize == expected_sample_rate,
-        "expected {expected_sample_rate} Hz wav, got {} Hz for {}",
-        spec.sample_rate,
-        path.display()
-    );
-    ensure!(spec.channels >= 1, "wav file had zero channels: {}", path.display());
-
-    let channels = usize::from(spec.channels);
-    let samples = match (spec.sample_format, spec.bits_per_sample) {
-        (hound::SampleFormat::Float, 32) => reader
-            .samples::<f32>()
-            .collect::<Result<Vec<_>, _>>()
-            .context("failed to read f32 wav samples")?,
-        (hound::SampleFormat::Int, bits_per_sample) if bits_per_sample <= 16 => {
-            let scale = f32::from(i16::MAX);
-            reader
-                .samples::<i16>()
-                .map(|sample| sample.map(|value| f32::from(value) / scale))
-                .collect::<Result<Vec<_>, _>>()
-                .context("failed to read i16 wav samples")?
-        }
-        (hound::SampleFormat::Int, bits_per_sample) if bits_per_sample <= 32 => {
-            let scale = ((1_i64 << (bits_per_sample - 1)) - 1) as f32;
-            reader
-                .samples::<i32>()
-                .map(|sample| sample.map(|value| value as f32 / scale))
-                .collect::<Result<Vec<_>, _>>()
-                .context("failed to read i32 wav samples")?
-        }
-        _ => bail!(
-            "unsupported wav format for {}: {:?} {}-bit",
-            path.display(),
-            spec.sample_format,
-            spec.bits_per_sample
-        ),
-    };
-
-    if channels == 1 {
-        return Ok(samples);
-    }
-
-    let mut mono = Vec::with_capacity(samples.len() / channels);
-    for frame in samples.chunks_exact(channels) {
-        mono.push(frame.iter().sum::<f32>() / channels as f32);
-    }
-    Ok(mono)
-}
-
 #[derive(Debug, Clone)]
 struct CmvnStats {
     shift: Vec<f32>,
@@ -332,7 +287,8 @@ struct CmvnStats {
 impl CmvnStats {
     fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let mut file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        let mut file =
+            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
         let mut content = String::new();
         file.read_to_string(&mut content)
             .with_context(|| format!("failed to read {}", path.display()))?;
@@ -341,7 +297,10 @@ impl CmvnStats {
             .context("failed to parse <AddShift> vector")?;
         let scale = parse_bracket_values(after_marker(&content, "<Rescale>")?)
             .context("failed to parse <Rescale> vector")?;
-        ensure!(shift.len() == scale.len(), "CMVN shift/scale length mismatch");
+        ensure!(
+            shift.len() == scale.len(),
+            "CMVN shift/scale length mismatch"
+        );
         Ok(Self { shift, scale })
     }
 }
@@ -413,7 +372,8 @@ impl SenseVoiceFrontend {
         let padded_window_size = frame_length.next_power_of_two();
         let mut planner = RealFftPlanner::<f32>::new();
         let rfft = planner.plan_fft_forward(padded_window_size);
-        let mel_filters = kaldi_mel_filter_bank(num_mels, padded_window_size, sample_rate, 20.0, 0.0);
+        let mel_filters =
+            kaldi_mel_filter_bank(num_mels, padded_window_size, sample_rate, 20.0, 0.0);
         ensure!(
             cmvn.shift.len() == num_mels * lfr_m,
             "CMVN shift dim {} did not match expected {}",
@@ -510,7 +470,9 @@ impl SenseVoiceFrontend {
 
         let mut padded = Array2::<f32>::zeros((time_steps + left_padding, feat_dim));
         for row in 0..left_padding {
-            padded.slice_mut(s![row, ..]).assign(&input.slice(s![0, ..]));
+            padded
+                .slice_mut(s![row, ..])
+                .assign(&input.slice(s![0, ..]));
         }
         padded.slice_mut(s![left_padding.., ..]).assign(input);
 
@@ -564,7 +526,11 @@ fn kaldi_mel_filter_bank(
 ) -> Array2<f32> {
     let num_freqs = n_fft / 2 + 1;
     let nyquist = sample_rate as f32 / 2.0;
-    let high_freq = if high_freq <= 0.0 { nyquist + high_freq } else { high_freq };
+    let high_freq = if high_freq <= 0.0 {
+        nyquist + high_freq
+    } else {
+        high_freq
+    };
     let mel_low = hz_to_kaldi_mel(low_freq);
     let mel_high = hz_to_kaldi_mel(high_freq);
     let mel_step = (mel_high - mel_low) / (num_mels + 1) as f32;
@@ -596,16 +562,4 @@ fn hz_to_kaldi_mel(hz: f32) -> f32 {
 
 fn kaldi_mel_to_hz(mel: f32) -> f32 {
     700.0 * ((mel / 1127.0).exp() - 1.0)
-}
-
-fn argmax(values: ndarray::ArrayView1<'_, f32>) -> usize {
-    let mut best_idx = 0usize;
-    let mut best_value = f32::NEG_INFINITY;
-    for (idx, value) in values.iter().copied().enumerate() {
-        if value > best_value {
-            best_idx = idx;
-            best_value = value;
-        }
-    }
-    best_idx
 }

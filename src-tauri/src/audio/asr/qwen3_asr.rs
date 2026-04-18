@@ -7,23 +7,24 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
-use ndarray::{Array2, Array3, Array4, Axis, Ix3, Ix4, s};
+use crate::audio::asr::utils;
+use anyhow::{anyhow, ensure, Context, Result};
+use ndarray::{s, Array2, Array3, Array4, Axis, Ix3, Ix4};
 use ort::{
     ep::{self, ExecutionProvider},
     session::{
-        Session,
         builder::{GraphOptimizationLevel, SessionBuilder},
+        Session,
     },
     value::TensorRef,
 };
 use realfft::RealFftPlanner;
 use serde::Deserialize;
 use tokenizers::{
-    AddedToken, Tokenizer,
-    decoders::byte_level::ByteLevel as ByteLevelDecoder,
-    models::bpe::BPE,
+    decoders::byte_level::ByteLevel as ByteLevelDecoder, models::bpe::BPE,
     pre_tokenizers::byte_level::ByteLevel,
+    AddedToken,
+    Tokenizer,
 };
 
 const DEFAULT_SAMPLE_RATE: usize = 16_000;
@@ -157,8 +158,8 @@ impl Qwen3AsrLoader {
     }
 
     /// 直接接收 wav 文件路径并返回识别文本。
-    pub fn recognize_wav(&mut self, wav_path: impl AsRef<Path>) -> Result<String> {
-        let samples = load_wav_mono(wav_path.as_ref(), self.feature_extractor.sample_rate)?;
+    pub fn recognize_wav_text(&mut self, wav_path: impl AsRef<Path>) -> Result<String> {
+        let samples = utils::load_wav_mono(wav_path.as_ref(), self.feature_extractor.sample_rate)?;
         let input_features = self.feature_extractor.extract(&samples)?;
         let conv_output = self.run_conv_frontend(&input_features)?;
         let audio_features = self.run_encoder(&conv_output)?;
@@ -244,9 +245,7 @@ impl Qwen3AsrLoader {
         let mut cache_keys = (0..self.decoder_layers)
             .map(|_| Array4::<f32>::zeros((1, prompt_ids.len() + self.config.max_new_tokens, self.kv_heads, self.head_dim)))
             .collect::<Vec<_>>();
-        let mut cache_values = (0..self.decoder_layers)
-            .map(|_| Array4::<f32>::zeros((1, prompt_ids.len() + self.config.max_new_tokens, self.kv_heads, self.head_dim)))
-            .collect::<Vec<_>>();
+        let mut cache_values = cache_keys.clone();
 
         let mut generated_ids = Vec::new();
         let mut current_input_ids = prompt_ids.to_vec();
@@ -288,7 +287,7 @@ impl Qwen3AsrLoader {
                 .context("failed to extract decoder logits")?
                 .into_dimensionality::<Ix3>()
                 .context("decoder logits did not have rank 3")?;
-            let next_token_id = argmax(logits.slice(s![0, current_input_ids.len() - 1, ..])) as u32;
+            let next_token_id = utils::argmax(logits.slice(s![0, current_input_ids.len() - 1, ..])) as u32;
 
             if self.stop_token_ids.contains(&next_token_id) {
                 break;
@@ -384,10 +383,6 @@ fn configure_execution_providers(
         ExecutionMode::CpuOnly => Ok(builder),
         ExecutionMode::Auto => {
             let cuda = ep::CUDA::default().with_device_id(config.gpu_device_id);
-            match cuda.is_available() {
-                Ok(true) => println!("CUDA available"),
-                Ok(false) | Err(_) => println!("CUDA unavailable"),
-            }
             match cuda.is_available() {
                 Ok(true) => builder
                     .with_execution_providers([cuda.build()])
@@ -495,82 +490,12 @@ fn ort_error(error: ort::Error) -> anyhow::Error {
     anyhow!(error.to_string())
 }
 
-fn ort_builder_error(error: ort::Error<ort::session::builder::SessionBuilder>) -> anyhow::Error {
+fn ort_builder_error(error: ort::Error<SessionBuilder>) -> anyhow::Error {
     anyhow!(error.to_string())
 }
 
 fn tokenizer_error(error: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Error {
     anyhow!(error.to_string())
-}
-
-/// 读取 wav 并转换成单声道 `f32` PCM。
-///
-/// 如果输入是多声道，这里按帧求平均；采样率不符合预期时直接报错。
-fn load_wav_mono(path: &Path, expected_sample_rate: usize) -> Result<Vec<f32>> {
-    let mut reader = hound::WavReader::open(path)
-        .with_context(|| format!("failed to open wav file {}", path.display()))?;
-    let spec = reader.spec();
-    ensure!(
-        spec.sample_rate as usize == expected_sample_rate,
-        "expected {expected_sample_rate} Hz wav, got {} Hz for {}",
-        spec.sample_rate,
-        path.display()
-    );
-    ensure!(spec.channels >= 1, "wav file had zero channels: {}", path.display());
-
-    let channels = usize::from(spec.channels);
-    let samples = match (spec.sample_format, spec.bits_per_sample) {
-        (hound::SampleFormat::Float, 32) => reader
-            .samples::<f32>()
-            .collect::<Result<Vec<_>, _>>()
-            .context("failed to read f32 wav samples")?,
-        (hound::SampleFormat::Int, bits_per_sample) if bits_per_sample <= 16 => {
-            let scale = f32::from(i16::MAX);
-            reader
-                .samples::<i16>()
-                .map(|sample| sample.map(|value| f32::from(value) / scale))
-                .collect::<Result<Vec<_>, _>>()
-                .context("failed to read i16 wav samples")?
-        }
-        (hound::SampleFormat::Int, bits_per_sample) if bits_per_sample <= 32 => {
-            let scale = ((1_i64 << (bits_per_sample - 1)) - 1) as f32;
-            reader
-                .samples::<i32>()
-                .map(|sample| sample.map(|value| value as f32 / scale))
-                .collect::<Result<Vec<_>, _>>()
-                .context("failed to read i32 wav samples")?
-        }
-        _ => bail!(
-            "unsupported wav format for {}: {:?} {}-bit",
-            path.display(),
-            spec.sample_format,
-            spec.bits_per_sample
-        ),
-    };
-
-    if channels == 1 {
-        return Ok(samples);
-    }
-
-    let mut mono = Vec::with_capacity(samples.len() / channels);
-    for frame in samples.chunks_exact(channels) {
-        let avg = frame.iter().sum::<f32>() / channels as f32;
-        mono.push(avg);
-    }
-    Ok(mono)
-}
-
-/// 在贪心解码时返回最大值对应的下标。
-fn argmax(values: ndarray::ArrayView1<'_, f32>) -> usize {
-    let mut best_idx = 0usize;
-    let mut best_value = f32::NEG_INFINITY;
-    for (idx, value) in values.iter().copied().enumerate() {
-        if value > best_value {
-            best_idx = idx;
-            best_value = value;
-        }
-    }
-    best_idx
 }
 
 /// 清理模板 token，只保留最终识别文本。
@@ -756,12 +681,12 @@ fn hz_to_mel(hz: f32) -> f32 {
     let f_sp = 200.0 / 3.0;
     let min_log_hz = 1000.0;
     let min_log_mel = min_log_hz / f_sp;
-    let logstep = (6.4_f32).ln() / 27.0;
+    let log_step = 6.4_f32.ln() / 27.0;
 
     if hz < min_log_hz {
         hz / f_sp
     } else {
-        min_log_mel + (hz / min_log_hz).ln() / logstep
+        min_log_mel + (hz / min_log_hz).ln() / log_step
     }
 }
 
@@ -770,12 +695,12 @@ fn mel_to_hz(mel: f32) -> f32 {
     let f_sp = 200.0 / 3.0;
     let min_log_hz = 1000.0;
     let min_log_mel = min_log_hz / f_sp;
-    let logstep = (6.4_f32).ln() / 27.0;
+    let log_step = 6.4_f32.ln() / 27.0;
 
     if mel < min_log_mel {
         mel * f_sp
     } else {
-        min_log_hz * (logstep * (mel - min_log_mel)).exp()
+        min_log_hz * (log_step * (mel - min_log_mel)).exp()
     }
 }
 
