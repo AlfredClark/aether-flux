@@ -18,7 +18,8 @@ pub fn create_wav_writer(
     sample_rate: u32,
 ) -> Result<WavWriter<std::io::BufWriter<std::fs::File>>, String> {
     if let Some(parent) = PathBuf::from(file_path).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create recording directory: {e}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create recording directory: {e}"))?;
     }
 
     let spec = WavSpec {
@@ -64,7 +65,8 @@ pub fn rewrite_wav_with_sample_rate(
         .map_err(|e| format!("Failed to finalize resampled WAV file: {e}"))?;
 
     if PathBuf::from(file_path).exists() {
-        std::fs::remove_file(file_path).map_err(|e| format!("Failed to remove original WAV file: {e}"))?;
+        std::fs::remove_file(file_path)
+            .map_err(|e| format!("Failed to remove original WAV file: {e}"))?;
     }
 
     std::fs::rename(&tmp_path, file_path)
@@ -88,8 +90,9 @@ fn resample_interleaved_i16(
         return input.to_vec();
     }
 
-    let output_frames =
-        ((input_frames as u64 * output_sample_rate as u64) / input_sample_rate as u64).max(1) as usize;
+    let output_frames = ((input_frames as u64 * output_sample_rate as u64)
+        / input_sample_rate as u64)
+        .max(1) as usize;
     let step = input_sample_rate as f64 / output_sample_rate as f64;
     let mut output = Vec::with_capacity(output_frames * channels);
 

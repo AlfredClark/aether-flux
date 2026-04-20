@@ -1,43 +1,25 @@
 use std::{
     collections::{BTreeSet, HashMap},
     f32::consts::PI,
-    fs::File,
-    io::BufReader,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use crate::audio::asr::utils;
+use super::loader::{self, AsrLoader, OrtRuntimeConfig, OrtRuntimeConfigProvider};
 use anyhow::{anyhow, ensure, Context, Result};
 use ndarray::{s, Array2, Array3, Array4, Axis, Ix3, Ix4};
 use ort::{
-    ep::{self, ExecutionProvider},
-    session::{
-        builder::{GraphOptimizationLevel, SessionBuilder},
-        Session,
-    },
+    session::{builder::GraphOptimizationLevel, Session},
     value::TensorRef,
 };
 use realfft::RealFftPlanner;
 use serde::Deserialize;
 use tokenizers::{
     decoders::byte_level::ByteLevel as ByteLevelDecoder, models::bpe::BPE,
-    pre_tokenizers::byte_level::ByteLevel,
-    AddedToken,
-    Tokenizer,
+    pre_tokenizers::byte_level::ByteLevel, AddedToken, Tokenizer,
 };
 
 const DEFAULT_SAMPLE_RATE: usize = 16_000;
-
-/// 推理设备选择策略。
-///
-/// `Auto` 会优先尝试 CUDA，不可用时自动回退到 CPU。
-/// `CpuOnly` 则完全跳过 GPU 探测。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionMode {
-    Auto,
-    CpuOnly,
-}
 
 #[derive(Debug, Clone)]
 /// ASR 加载器的初始化配置。
@@ -49,11 +31,8 @@ pub struct Qwen3AsrLoaderConfig {
     pub tokenizer_config_json: PathBuf,
     pub max_new_tokens: usize,
     pub language: Option<String>,
-    pub intra_threads: usize,
-    pub inter_threads: usize,
-    pub optimization_level: GraphOptimizationLevel,
-    pub execution_mode: ExecutionMode,
-    pub gpu_device_id: i32,
+    /// 与具体模型无关的 ORT 运行时配置统一收敛到这里。
+    pub runtime: OrtRuntimeConfig,
 }
 
 impl Qwen3AsrLoaderConfig {
@@ -70,12 +49,18 @@ impl Qwen3AsrLoaderConfig {
             tokenizer_config_json: root_dir.join("tokenizer/tokenizer_config.json"),
             max_new_tokens: 256,
             language: None,
-            intra_threads: 1,
-            inter_threads: 1,
-            optimization_level: GraphOptimizationLevel::Level3,
-            execution_mode: ExecutionMode::Auto,
-            gpu_device_id: 0,
+            runtime: OrtRuntimeConfig {
+                optimization_level: GraphOptimizationLevel::Level3,
+                ..OrtRuntimeConfig::default()
+            },
         }
+    }
+}
+
+impl OrtRuntimeConfigProvider for Qwen3AsrLoaderConfig {
+    /// 返回 Qwen3-ASR 共享的 ORT 运行时配置。
+    fn ort_runtime_config(&self) -> &OrtRuntimeConfig {
+        &self.runtime
     }
 }
 
@@ -99,9 +84,11 @@ pub struct Qwen3AsrLoader {
 impl Qwen3AsrLoader {
     /// 加载 tokenizer、特征提取器和三个 ONNX 子模型。
     pub fn new(config: Qwen3AsrLoaderConfig) -> Result<Self> {
-        let model_config: ModelConfigFile = read_json(&config.config_json)?;
-        let preprocessor_config: PreprocessorConfigFile = read_json(&config.preprocessor_config_json)?;
-        let tokenizer_config: TokenizerConfigFile = read_json(&config.tokenizer_config_json)?;
+        let model_config: ModelConfigFile = loader::read_json(&config.config_json)?;
+        let preprocessor_config: PreprocessorConfigFile =
+            loader::read_json(&config.preprocessor_config_json)?;
+        let tokenizer_config: TokenizerConfigFile =
+            loader::read_json(&config.tokenizer_config_json)?;
 
         let tokenizer = build_tokenizer(&config.tokenizer_dir, &tokenizer_config)?;
         let mut stop_token_ids = BTreeSet::new();
@@ -134,9 +121,10 @@ impl Qwen3AsrLoader {
             }
         }
 
-        let conv_frontend = build_session(&config, config.model_dir.join("conv_frontend.onnx"))?;
-        let encoder = build_session(&config, config.model_dir.join("encoder.onnx"))?;
-        let decoder = build_session(&config, config.model_dir.join("decoder.onnx"))?;
+        let conv_frontend =
+            loader::build_session(&config, config.model_dir.join("conv_frontend.onnx"))?;
+        let encoder = loader::build_session(&config, config.model_dir.join("encoder.onnx"))?;
+        let decoder = loader::build_session(&config, config.model_dir.join("decoder.onnx"))?;
 
         let (decoder_layers, kv_heads, head_dim) = infer_decoder_cache_layout(&decoder)?;
 
@@ -159,7 +147,7 @@ impl Qwen3AsrLoader {
 
     /// 直接接收 wav 文件路径并返回识别文本。
     pub fn recognize_wav_text(&mut self, wav_path: impl AsRef<Path>) -> Result<String> {
-        let samples = utils::load_wav_mono(wav_path.as_ref(), self.feature_extractor.sample_rate)?;
+        let samples = loader::load_wav_mono(wav_path.as_ref(), self.feature_extractor.sample_rate)?;
         let input_features = self.feature_extractor.extract(&samples)?;
         let conv_output = self.run_conv_frontend(&input_features)?;
         let audio_features = self.run_encoder(&conv_output)?;
@@ -223,9 +211,7 @@ impl Qwen3AsrLoader {
         let suffix = self
             .tokenizer
             .encode(
-                format!(
-                    "<|im_end|>\n<|im_start|>assistant\n language {target_language}<asr_text>"
-                ),
+                format!("<|im_end|>\n<|im_start|>assistant\n language {target_language}<asr_text>"),
                 false,
             )
             .map_err(tokenizer_error)
@@ -243,7 +229,14 @@ impl Qwen3AsrLoader {
     /// 自回归生成识别结果，并维护 decoder KV cache。
     fn generate(&mut self, audio_features: &Array3<f32>, prompt_ids: &[i64]) -> Result<Vec<u32>> {
         let mut cache_keys = (0..self.decoder_layers)
-            .map(|_| Array4::<f32>::zeros((1, prompt_ids.len() + self.config.max_new_tokens, self.kv_heads, self.head_dim)))
+            .map(|_| {
+                Array4::<f32>::zeros((
+                    1,
+                    prompt_ids.len() + self.config.max_new_tokens,
+                    self.kv_heads,
+                    self.head_dim,
+                ))
+            })
             .collect::<Vec<_>>();
         let mut cache_values = cache_keys.clone();
 
@@ -287,7 +280,8 @@ impl Qwen3AsrLoader {
                 .context("failed to extract decoder logits")?
                 .into_dimensionality::<Ix3>()
                 .context("decoder logits did not have rank 3")?;
-            let next_token_id = utils::argmax(logits.slice(s![0, current_input_ids.len() - 1, ..])) as u32;
+            let next_token_id =
+                loader::argmax(logits.slice(s![0, current_input_ids.len() - 1, ..])) as u32;
 
             if self.stop_token_ids.contains(&next_token_id) {
                 break;
@@ -347,49 +341,10 @@ impl Qwen3AsrLoader {
     }
 }
 
-/// 创建 ONNX Session，并根据配置决定是否启用 GPU。
-///
-/// 当 CUDA 不可用时，这里会保持默认 CPU 路径，不让初始化失败。
-fn build_session(config: &Qwen3AsrLoaderConfig, path: impl AsRef<Path>) -> Result<Session> {
-    let path = path.as_ref();
-    let builder = Session::builder().map_err(ort_error)?;
-    let builder = builder
-        .with_optimization_level(config.optimization_level)
-        .map_err(ort_builder_error)?;
-    let builder = builder
-        .with_intra_threads(config.intra_threads)
-        .map_err(ort_builder_error)?;
-    let builder = builder
-        .with_inter_threads(config.inter_threads)
-        .map_err(ort_builder_error)?;
-    let builder = builder.with_memory_pattern(false).map_err(ort_builder_error)?;
-    let mut builder = configure_execution_providers(builder, config)?;
-    let session = builder
-        .commit_from_file(path)
-        .map_err(ort_error)
-        .with_context(|| format!("failed to load ONNX model from {}", path.display()))?;
-    Ok(session)
-}
-
-/// 为当前 SessionBuilder 配置执行提供者。
-///
-/// `Auto` 模式会优先尝试 CUDA。只要当前 ORT 构建或宿主环境不支持 CUDA，
-/// 就自动回退为默认 CPU 执行路径。
-fn configure_execution_providers(
-    builder: SessionBuilder,
-    config: &Qwen3AsrLoaderConfig,
-) -> Result<SessionBuilder> {
-    match config.execution_mode {
-        ExecutionMode::CpuOnly => Ok(builder),
-        ExecutionMode::Auto => {
-            let cuda = ep::CUDA::default().with_device_id(config.gpu_device_id);
-            match cuda.is_available() {
-                Ok(true) => builder
-                    .with_execution_providers([cuda.build()])
-                    .map_err(ort_builder_error),
-                Ok(false) | Err(_) => Ok(builder),
-            }
-        }
+impl AsrLoader for Qwen3AsrLoader {
+    /// 适配统一 loader 接口，转发到具体的 Qwen3-ASR 识别逻辑。
+    fn recognize_wav_text(&mut self, wav_path: &Path) -> Result<String> {
+        Qwen3AsrLoader::recognize_wav_text(self, wav_path)
     }
 }
 
@@ -409,10 +364,15 @@ fn infer_decoder_cache_layout(decoder: &Session) -> Result<(usize, usize, usize)
             .dtype()
             .tensor_shape()
             .ok_or_else(|| anyhow!("decoder cache input {name} was not a tensor"))?;
-        ensure!(shape.len() == 4, "decoder cache input {name} must have rank 4, got {shape:?}");
+        ensure!(
+            shape.len() == 4,
+            "decoder cache input {name} must have rank 4, got {shape:?}"
+        );
         let shape_values = shape.iter().copied().collect::<Vec<_>>();
-        let current_kv_heads = usize::try_from(shape_values[2]).context("cache kv_heads was negative")?;
-        let current_head_dim = usize::try_from(shape_values[3]).context("cache head_dim was negative")?;
+        let current_kv_heads =
+            usize::try_from(shape_values[2]).context("cache kv_heads was negative")?;
+        let current_head_dim =
+            usize::try_from(shape_values[3]).context("cache head_dim was negative")?;
         kv_heads.get_or_insert(current_kv_heads);
         head_dim.get_or_insert(current_head_dim);
         ensure!(
@@ -431,15 +391,11 @@ fn infer_decoder_cache_layout(decoder: &Session) -> Result<(usize, usize, usize)
     ))
 }
 
-/// 读取并反序列化 JSON 配置文件。
-fn read_json<T: for<'de> Deserialize<'de>>(path: impl AsRef<Path>) -> Result<T> {
-    let path = path.as_ref();
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    serde_json::from_reader(BufReader::new(file)).with_context(|| format!("failed to parse {}", path.display()))
-}
-
 /// 使用导出的 tokenizer 文件重建 Rust 侧 tokenizer。
-fn build_tokenizer(tokenizer_dir: &Path, tokenizer_config: &TokenizerConfigFile) -> Result<Tokenizer> {
+fn build_tokenizer(
+    tokenizer_dir: &Path,
+    tokenizer_config: &TokenizerConfigFile,
+) -> Result<Tokenizer> {
     let vocab_path = tokenizer_dir.join("vocab.json");
     let merges_path = tokenizer_dir.join("merges.txt");
     let vocab_path_str = vocab_path
@@ -470,8 +426,8 @@ fn build_tokenizer(tokenizer_dir: &Path, tokenizer_config: &TokenizerConfigFile)
     for (_, token) in entries {
         let added_token = AddedToken::from(token.content.clone(), token.special)
             .single_word(token.single_word)
-            .lstrip(token.lstrip)
-            .rstrip(token.rstrip)
+            .lstrip(token.l_strip)
+            .rstrip(token.r_strip)
             .normalized(token.normalized)
             .special(token.special);
         if token.special {
@@ -486,14 +442,7 @@ fn build_tokenizer(tokenizer_dir: &Path, tokenizer_config: &TokenizerConfigFile)
     Ok(tokenizer)
 }
 
-fn ort_error(error: ort::Error) -> anyhow::Error {
-    anyhow!(error.to_string())
-}
-
-fn ort_builder_error(error: ort::Error<SessionBuilder>) -> anyhow::Error {
-    anyhow!(error.to_string())
-}
-
+/// 将 tokenizer 返回的错误统一包装为 `anyhow::Error`。
 fn tokenizer_error(error: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Error {
     anyhow!(error.to_string())
 }
@@ -505,7 +454,10 @@ fn clean_asr_response(raw: &str) -> String {
     } else {
         raw.trim()
     };
-    cleaned.trim_matches(|ch| ch == '\'' || ch == '"').trim().to_string()
+    cleaned
+        .trim_matches(|ch| ch == '\'' || ch == '"')
+        .trim()
+        .to_string()
 }
 
 /// Whisper 风格的音频特征提取器。
@@ -517,24 +469,28 @@ struct WhisperFeatureExtractor {
     n_fft: usize,
     hop_length: usize,
     sample_rate: usize,
-    hann_window: Vec<f32>,
+    han_ning_window: Vec<f32>,
     mel_filters: Array2<f32>,
-    rfft: Arc<dyn realfft::RealToComplex<f32>>,
+    real_fft: Arc<dyn realfft::RealToComplex<f32>>,
 }
 
 impl WhisperFeatureExtractor {
     /// 根据导出的预处理配置初始化 FFT、窗函数和 mel filter。
     fn new(config: PreprocessorConfigFile) -> Self {
         let mut planner = RealFftPlanner::<f32>::new();
-        let rfft = planner.plan_fft_forward(config.n_fft);
+        let real_fft = planner.plan_fft_forward(config.n_fft);
         Self {
             feature_size: config.feature_size,
             n_fft: config.n_fft,
             hop_length: config.hop_length,
             sample_rate: DEFAULT_SAMPLE_RATE,
-            hann_window: hann_window(config.n_fft),
-            mel_filters: slaney_mel_filter_bank(config.feature_size, config.n_fft, DEFAULT_SAMPLE_RATE),
-            rfft,
+            han_ning_window: han_ning_window(config.n_fft),
+            mel_filters: slaney_mel_filter_bank(
+                config.feature_size,
+                config.n_fft,
+                DEFAULT_SAMPLE_RATE,
+            ),
+            real_fft,
         }
     }
 
@@ -547,7 +503,10 @@ impl WhisperFeatureExtractor {
     /// 计算 log-mel spectrogram。
     fn log_mel_spectrogram(&self, samples: &[f32]) -> Result<Array2<f32>> {
         let padded = reflect_pad(samples, self.n_fft / 2);
-        ensure!(padded.len() >= self.n_fft, "wav was too short to build a spectrogram");
+        ensure!(
+            padded.len() >= self.n_fft,
+            "wav was too short to build a spectrogram"
+        );
 
         let total_frames = 1 + (padded.len() - self.n_fft) / self.hop_length;
         ensure!(total_frames > 1, "spectrogram needed at least two frames");
@@ -556,7 +515,7 @@ impl WhisperFeatureExtractor {
 
         let mut mel = Array2::<f32>::zeros((usable_frames, self.feature_size));
         let mut input = vec![0_f32; self.n_fft];
-        let mut spectrum = self.rfft.make_output_vec();
+        let mut spectrum = self.real_fft.make_output_vec();
 
         for frame_idx in 0..usable_frames {
             let start = frame_idx * self.hop_length;
@@ -564,12 +523,12 @@ impl WhisperFeatureExtractor {
             for ((slot, sample), window) in input
                 .iter_mut()
                 .zip(frame.iter().copied())
-                .zip(self.hann_window.iter().copied())
+                .zip(self.han_ning_window.iter().copied())
             {
                 *slot = sample * window;
             }
 
-            self.rfft
+            self.real_fft
                 .process(&mut input, &mut spectrum)
                 .context("failed to compute FFT for audio frame")?;
 
@@ -596,8 +555,8 @@ impl WhisperFeatureExtractor {
     }
 }
 
-/// 生成 Hann 窗。
-fn hann_window(size: usize) -> Vec<f32> {
+/// 生成汉宁窗。
+fn han_ning_window(size: usize) -> Vec<f32> {
     (0..size)
         .map(|idx| 0.5 - 0.5 * (2.0 * PI * idx as f32 / size as f32).cos())
         .collect()
@@ -639,15 +598,15 @@ fn reflect_index(mut idx: isize, len: usize) -> usize {
 }
 
 /// 构造 Slaney 风格的 mel filter bank。
-fn slaney_mel_filter_bank(n_mels: usize, n_fft: usize, sample_rate: usize) -> Array2<f32> {
+fn slaney_mel_filter_bank(n_mel: usize, n_fft: usize, sample_rate: usize) -> Array2<f32> {
     let n_freqs = n_fft / 2 + 1;
-    let mut filters = Array2::<f32>::zeros((n_mels, n_freqs));
+    let mut filters = Array2::<f32>::zeros((n_mel, n_freqs));
 
     let mel_min = hz_to_mel(0.0);
     let mel_max = hz_to_mel(sample_rate as f32 / 2.0);
-    let mel_points = (0..(n_mels + 2))
+    let mel_points = (0..(n_mel + 2))
         .map(|idx| {
-            let ratio = idx as f32 / (n_mels + 1) as f32;
+            let ratio = idx as f32 / (n_mel + 1) as f32;
             mel_to_hz(mel_min + (mel_max - mel_min) * ratio)
         })
         .collect::<Vec<_>>();
@@ -655,7 +614,7 @@ fn slaney_mel_filter_bank(n_mels: usize, n_fft: usize, sample_rate: usize) -> Ar
         .map(|idx| idx as f32 * sample_rate as f32 / n_fft as f32)
         .collect::<Vec<_>>();
 
-    for mel_idx in 0..n_mels {
+    for mel_idx in 0..n_mel {
         let left = mel_points[mel_idx];
         let center = mel_points[mel_idx + 1];
         let right = mel_points[mel_idx + 2];
@@ -676,7 +635,7 @@ fn slaney_mel_filter_bank(n_mels: usize, n_fft: usize, sample_rate: usize) -> Ar
     filters
 }
 
-/// Hz 转 mel。
+/// 将线性频率转换为 Whisper 使用的 mel 频率。
 fn hz_to_mel(hz: f32) -> f32 {
     let f_sp = 200.0 / 3.0;
     let min_log_hz = 1000.0;
@@ -690,7 +649,7 @@ fn hz_to_mel(hz: f32) -> f32 {
     }
 }
 
-/// mel 转 Hz。
+/// 将 Whisper 使用的 mel 频率转换回线性频率。
 fn mel_to_hz(mel: f32) -> f32 {
     let f_sp = 200.0 / 3.0;
     let min_log_hz = 1000.0;
@@ -733,9 +692,9 @@ struct TokenizerConfigFile {
 #[derive(Debug, Deserialize)]
 struct AddedTokenFile {
     content: String,
-    lstrip: bool,
+    l_strip: bool,
     normalized: bool,
-    rstrip: bool,
+    r_strip: bool,
     single_word: bool,
     special: bool,
 }

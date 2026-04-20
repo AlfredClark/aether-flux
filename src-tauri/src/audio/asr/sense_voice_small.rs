@@ -6,24 +6,14 @@ use std::{
     sync::Arc,
 };
 
-use crate::audio::asr::utils;
+use super::loader::{self, AsrLoader, OrtRuntimeConfig, OrtRuntimeConfigProvider};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use ndarray::{s, Array1, Array2, Axis, Ix1, Ix3};
 use ort::{
-    ep::{self, ExecutionProvider},
-    session::{
-        builder::{GraphOptimizationLevel, SessionBuilder},
-        Session,
-    },
+    session::{builder::GraphOptimizationLevel, Session},
     value::TensorRef,
 };
 use realfft::RealFftPlanner;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionMode {
-    Auto,
-    CpuOnly,
-}
 
 #[derive(Debug, Clone)]
 pub struct SenseVoiceSmallLoaderConfig {
@@ -38,14 +28,12 @@ pub struct SenseVoiceSmallLoaderConfig {
     pub lfr_n: usize,
     pub language_token: String,
     pub enable_itn: bool,
-    pub intra_threads: usize,
-    pub inter_threads: usize,
-    pub optimization_level: GraphOptimizationLevel,
-    pub execution_mode: ExecutionMode,
-    pub gpu_device_id: i32,
+    /// 与具体模型无关的 ORT 运行时配置统一收敛到这里。
+    pub runtime: OrtRuntimeConfig,
 }
 
 impl SenseVoiceSmallLoaderConfig {
+    /// 根据 SenseVoiceSmall 模型根目录构造默认配置。
     pub fn from_root(root_dir: impl AsRef<Path>) -> Self {
         let root_dir = root_dir.as_ref();
         Self {
@@ -60,12 +48,18 @@ impl SenseVoiceSmallLoaderConfig {
             lfr_n: 6,
             language_token: "<|zh|>".to_string(),
             enable_itn: true,
-            intra_threads: 1,
-            inter_threads: 1,
-            optimization_level: GraphOptimizationLevel::Level3,
-            execution_mode: ExecutionMode::Auto,
-            gpu_device_id: 0,
+            runtime: OrtRuntimeConfig {
+                optimization_level: GraphOptimizationLevel::Level3,
+                ..OrtRuntimeConfig::default()
+            },
         }
+    }
+}
+
+impl OrtRuntimeConfigProvider for SenseVoiceSmallLoaderConfig {
+    /// 返回 SenseVoiceSmall 共享的 ORT 运行时配置。
+    fn ort_runtime_config(&self) -> &OrtRuntimeConfig {
+        &self.runtime
     }
 }
 
@@ -87,8 +81,9 @@ pub struct SenseVoiceSmallLoader {
 }
 
 impl SenseVoiceSmallLoader {
+    /// 加载 SenseVoice 模型、词表和前端特征提取器。
     pub fn new(config: SenseVoiceSmallLoaderConfig) -> Result<Self> {
-        let tokens: Vec<String> = read_json(&config.tokens_path)?;
+        let tokens: Vec<String> = loader::read_json(&config.tokens_path)?;
         let language_id = sensevoice_language_id(&config.language_token)?;
         let textnorm_id = if config.enable_itn { 14 } else { 15 };
 
@@ -102,7 +97,7 @@ impl SenseVoiceSmallLoader {
             config.lfr_n,
             cmvn,
         )?;
-        let session = build_session(&config, &config.model_path)?;
+        let session = loader::build_session(&config, &config.model_path)?;
 
         Ok(Self {
             session,
@@ -114,9 +109,10 @@ impl SenseVoiceSmallLoader {
         })
     }
 
+    /// 识别指定 wav 文件，并返回结构化结果。
     pub fn recognize_wav(&mut self, wav_path: impl AsRef<Path>) -> Result<SenseVoiceSmallResult> {
         let wav_path = wav_path.as_ref();
-        let samples = utils::load_wav_mono(wav_path, self.frontend.sample_rate)?;
+        let samples = loader::load_wav_mono(wav_path, self.frontend.sample_rate)?;
         let speech = self.frontend.extract(&samples)?;
         let speech_len =
             i32::try_from(speech.len_of(Axis(0))).context("speech length overflowed i32")?;
@@ -154,24 +150,24 @@ impl SenseVoiceSmallLoader {
             .with_context(|| format!("failed to decode {}", wav_path.display()))
     }
 
+    /// 识别指定 wav 文件，并直接返回提取后的文本。
     pub fn recognize_wav_text(&mut self, wav_path: impl AsRef<Path>) -> Result<String> {
         Ok(self.recognize_wav(wav_path)?.text)
     }
 
+    /// 对 CTC logits 执行贪心解码并恢复最终文本。
     fn decode_ctc(&self, logits: ndarray::ArrayView2<'_, f32>) -> Result<SenseVoiceSmallResult> {
         let mut token_ids = Vec::new();
         let mut previous_id = None;
 
         for frame in logits.axis_iter(Axis(0)) {
-            let token_id = utils::argmax(frame);
+            let token_id = loader::argmax(frame);
             if token_id != self.blank_id && Some(token_id) != previous_id {
                 token_ids.push(token_id);
             }
             previous_id = Some(token_id);
         }
 
-        let mut raw_tokens = Vec::with_capacity(token_ids.len());
-        let mut special_tokens = Vec::new();
         let mut text_tokens = Vec::new();
         for &token_id in &token_ids {
             let token = self
@@ -183,28 +179,29 @@ impl SenseVoiceSmallLoader {
             if token == "<s>" || token == "</s>" || token == "<unk>" {
                 continue;
             }
-            raw_tokens.push(token.clone());
-            if is_special_token(&token) {
-                special_tokens.push(token);
-            } else {
+            if !is_special_token(&token) {
                 text_tokens.push(token);
             }
         }
 
         let text = decode_sentencepiece(&text_tokens);
-        Ok(SenseVoiceSmallResult {
-            // raw_text,
-            text,
-            // special_tokens,
-            // token_ids,
-        })
+        Ok(SenseVoiceSmallResult { text })
     }
 }
 
+impl AsrLoader for SenseVoiceSmallLoader {
+    /// 适配统一 loader 接口，转发到 SenseVoiceSmall 的识别实现。
+    fn recognize_wav_text(&mut self, wav_path: &Path) -> Result<String> {
+        SenseVoiceSmallLoader::recognize_wav_text(self, wav_path)
+    }
+}
+
+/// 判断 token 是否属于模型输出中的控制类特殊标记。
 fn is_special_token(token: &str) -> bool {
     token.starts_with("<|") && token.ends_with("|>")
 }
 
+/// 将 sentencepiece token 序列拼接为自然语言文本。
 fn decode_sentencepiece(tokens: &[String]) -> String {
     let mut text = String::new();
     for token in tokens {
@@ -224,60 +221,6 @@ fn decode_sentencepiece(tokens: &[String]) -> String {
         .to_string()
 }
 
-fn build_session(config: &SenseVoiceSmallLoaderConfig, path: impl AsRef<Path>) -> Result<Session> {
-    let path = path.as_ref();
-    let builder = Session::builder().map_err(ort_error)?;
-    let builder = builder
-        .with_optimization_level(config.optimization_level)
-        .map_err(ort_builder_error)?;
-    let builder = builder
-        .with_intra_threads(config.intra_threads)
-        .map_err(ort_builder_error)?;
-    let builder = builder
-        .with_inter_threads(config.inter_threads)
-        .map_err(ort_builder_error)?;
-    let builder = builder
-        .with_memory_pattern(false)
-        .map_err(ort_builder_error)?;
-    let mut builder = configure_execution_providers(builder, config)?;
-    builder
-        .commit_from_file(path)
-        .map_err(ort_error)
-        .with_context(|| format!("failed to load ONNX model from {}", path.display()))
-}
-
-fn configure_execution_providers(
-    builder: SessionBuilder,
-    config: &SenseVoiceSmallLoaderConfig,
-) -> Result<SessionBuilder> {
-    match config.execution_mode {
-        ExecutionMode::CpuOnly => Ok(builder),
-        ExecutionMode::Auto => {
-            let cuda = ep::CUDA::default().with_device_id(config.gpu_device_id);
-            match cuda.is_available() {
-                Ok(true) => builder
-                    .with_execution_providers([cuda.build()])
-                    .map_err(ort_builder_error),
-                Ok(false) | Err(_) => Ok(builder),
-            }
-        }
-    }
-}
-
-fn read_json<T: serde::de::DeserializeOwned>(path: impl AsRef<Path>) -> Result<T> {
-    let path = path.as_ref();
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    serde_json::from_reader(file).with_context(|| format!("failed to parse {}", path.display()))
-}
-
-fn ort_error(error: ort::Error) -> anyhow::Error {
-    anyhow!(error.to_string())
-}
-
-fn ort_builder_error(error: ort::Error<SessionBuilder>) -> anyhow::Error {
-    anyhow!(error.to_string())
-}
-
 #[derive(Debug, Clone)]
 struct CmvnStats {
     shift: Vec<f32>,
@@ -285,6 +228,7 @@ struct CmvnStats {
 }
 
 impl CmvnStats {
+    /// 从 Kaldi 风格的 CMVN 文件中读取平移和缩放统计量。
     fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let mut file =
@@ -305,6 +249,7 @@ impl CmvnStats {
     }
 }
 
+/// 在原始 CMVN 文本中定位指定标记之后的内容切片。
 fn after_marker<'a>(content: &'a str, marker: &str) -> Result<&'a str> {
     let marker_pos = content
         .find(marker)
@@ -312,6 +257,7 @@ fn after_marker<'a>(content: &'a str, marker: &str) -> Result<&'a str> {
     Ok(&content[marker_pos + marker.len()..])
 }
 
+/// 解析方括号包裹的浮点数序列。
 fn parse_bracket_values(content: &str) -> Result<Vec<f32>> {
     let start = content.find('[').ok_or_else(|| anyhow!("missing '['"))?;
     let end = content[start..]
@@ -324,6 +270,7 @@ fn parse_bracket_values(content: &str) -> Result<Vec<f32>> {
         .collect()
 }
 
+/// 将语言标记映射为 SenseVoice 模型要求的语言 ID。
 fn sensevoice_language_id(language: &str) -> Result<i32> {
     let normalized = language
         .trim()
@@ -358,6 +305,7 @@ struct SenseVoiceFrontend {
 }
 
 impl SenseVoiceFrontend {
+    /// 初始化 SenseVoice 前端所需的窗函数、FFT 和 mel 滤波器。
     fn new(
         sample_rate: usize,
         num_mels: usize,
@@ -402,12 +350,14 @@ impl SenseVoiceFrontend {
         })
     }
 
+    /// 执行完整的前端特征提取流程。
     fn extract(&self, samples: &[f32]) -> Result<Array2<f32>> {
         let fbank = self.kaldi_fbank(samples)?;
         let lfr = self.apply_lfr(&fbank)?;
         Ok(self.apply_cmvn(lfr))
     }
 
+    /// 计算符合 Kaldi 风格的 log-fbank 特征。
     fn kaldi_fbank(&self, samples: &[f32]) -> Result<Array2<f32>> {
         ensure!(
             samples.len() >= self.frame_length,
@@ -461,6 +411,7 @@ impl SenseVoiceFrontend {
         Ok(features)
     }
 
+    /// 应用 Low Frame Rate 叠帧策略以匹配模型输入维度。
     fn apply_lfr(&self, input: &Array2<f32>) -> Result<Array2<f32>> {
         let time_steps = input.len_of(Axis(0));
         let feat_dim = input.len_of(Axis(1));
@@ -500,6 +451,7 @@ impl SenseVoiceFrontend {
         Ok(output)
     }
 
+    /// 对叠帧后的特征执行 CMVN 标准化。
     fn apply_cmvn(&self, mut input: Array2<f32>) -> Array2<f32> {
         for mut row in input.axis_iter_mut(Axis(0)) {
             for (idx, value) in row.iter_mut().enumerate() {
@@ -510,6 +462,7 @@ impl SenseVoiceFrontend {
     }
 }
 
+/// 生成 SenseVoice 前端使用的 Hamming 窗。
 fn hamming_window(size: usize) -> Vec<f32> {
     let denom = size.saturating_sub(1).max(1) as f32;
     (0..size)
@@ -517,6 +470,7 @@ fn hamming_window(size: usize) -> Vec<f32> {
         .collect()
 }
 
+/// 构造 Kaldi 风格的 mel filter bank。
 fn kaldi_mel_filter_bank(
     num_mels: usize,
     n_fft: usize,
@@ -556,10 +510,12 @@ fn kaldi_mel_filter_bank(
     filters
 }
 
+/// 将线性频率转换为 Kaldi 定义的 mel 频率。
 fn hz_to_kaldi_mel(hz: f32) -> f32 {
     1127.0 * (1.0 + hz / 700.0).ln()
 }
 
+/// 将 Kaldi 定义的 mel 频率转换回线性频率。
 fn kaldi_mel_to_hz(mel: f32) -> f32 {
     700.0 * ((mel / 1127.0).exp() - 1.0)
 }

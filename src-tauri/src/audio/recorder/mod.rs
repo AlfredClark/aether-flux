@@ -15,9 +15,7 @@ use self::{
     device::{find_input_device_by_id, list_input_devices_impl, readable_device_name},
     encoding::{create_wav_writer, rewrite_wav_with_sample_rate},
     stream::{build_stream_f32, build_stream_i16, build_stream_u16, SharedWriter},
-    types::{
-        ActiveRecording, InputDeviceInfo, RecordingStatus, StopRecordingResult,
-    },
+    types::{ActiveRecording, InputDeviceInfo, RecordingStatus, StopRecordingResult},
 };
 
 pub use self::types::RecorderState;
@@ -81,7 +79,9 @@ pub fn start_recording(
         other => return Err(format!("Unsupported sample format: {other:?}")),
     };
 
-    stream.play().map_err(|e| format!("Failed to start recording stream: {e}"))?;
+    stream
+        .play()
+        .map_err(|e| format!("Failed to start recording stream: {e}"))?;
 
     guard.active = Some(ActiveRecording {
         stream,
@@ -142,12 +142,7 @@ pub fn stop_recording(recorder: State<'_, RecorderState>) -> Result<StopRecordin
     }
 
     if input_sample_rate != sample_rate {
-        rewrite_wav_with_sample_rate(
-            &file_path,
-            channels,
-            input_sample_rate,
-            sample_rate,
-        )?;
+        rewrite_wav_with_sample_rate(&file_path, channels, input_sample_rate, sample_rate)?;
     }
 
     drop(sink_guard);

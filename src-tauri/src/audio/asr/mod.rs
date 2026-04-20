@@ -1,71 +1,58 @@
+mod loader;
 mod qwen3_asr;
-mod sensevoice_small;
-mod utils;
+mod sense_voice_small;
 
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{async_runtime, AppHandle, Manager, State};
+use tauri::{async_runtime, AppHandle, State};
 
 use self::{
-    qwen3_asr::{
-        ExecutionMode as Qwen3ExecutionMode, Qwen3AsrLoader, Qwen3AsrLoaderConfig,
-    },
-    sensevoice_small::{
-        ExecutionMode as SenseVoiceExecutionMode, SenseVoiceSmallLoader, SenseVoiceSmallLoaderConfig,
-    },
+    loader::{resolve_model_root, DynAsrLoader, ExecutionMode},
+    qwen3_asr::{Qwen3AsrLoader, Qwen3AsrLoaderConfig},
+    sense_voice_small::{SenseVoiceSmallLoader, SenseVoiceSmallLoaderConfig},
 };
 
+/// ASR 模型类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AsrModelKind {
+    /// Qwen3-ASR
     Qwen3Asr,
+    /// SenseVoiceSmall
     #[serde(alias = "sensevoice_small")]
     SenseVoiceSmall,
 }
 
+/// ASR 运行模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AsrExecutionMode {
+    /// 优先使用GPU，GPU无效则回滚到CPU
     Auto,
+    /// 只使用CPU推理
     OnlyCpu,
 }
 
+/// ASR 运行时
 #[derive(Default)]
 pub struct AsrState {
     /// 当前已加载的 ASR 运行时，放在 Mutex 中以便命令串行访问和安全替换。
     pub(crate) inner: Arc<Mutex<AsrStateInner>>,
 }
 
+/// ASR 运行时内部
 #[derive(Default)]
 pub(crate) struct AsrStateInner {
     pub(crate) current_model: Option<AsrModelKind>,
     pub(crate) current_mode: Option<AsrExecutionMode>,
-    pub(crate) runtime: Option<AsrRuntime>,
+    pub(crate) runtime: Option<DynAsrLoader>,
 }
 
-pub(crate) enum AsrRuntime {
-    Qwen3(Qwen3AsrLoader),
-    SenseVoiceSmall(SenseVoiceSmallLoader),
-}
-
-impl AsrRuntime {
-    /// 统一封装不同模型加载器的识别入口，前端不需要感知具体实现差异。
-    fn recognize_wav_text(&mut self, wav_path: &Path) -> Result<String, String> {
-        match self {
-            Self::Qwen3(loader) => loader
-                .recognize_wav_text(wav_path)
-                .map_err(|err| format!("Qwen3-ASR 识别失败: {err:#}")),
-            Self::SenseVoiceSmall(loader) => loader
-                .recognize_wav_text(wav_path)
-                .map_err(|err| format!("SenseVoiceSmall 识别失败: {err:#}")),
-        }
-    }
-}
-
+/// ASR 状态
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AsrStatus {
@@ -75,6 +62,7 @@ pub struct AsrStatus {
 }
 
 impl AsrStatus {
+    /// 根据内部状态快照构造前端可消费的状态对象。
     fn from_inner(inner: &AsrStateInner) -> Self {
         Self {
             is_loaded: inner.runtime.is_some(),
@@ -92,6 +80,7 @@ pub struct AsrRecognitionResult {
     pub audio_path: String,
 }
 
+/// 查询当前 ASR 运行时的加载状态。
 #[tauri::command]
 pub fn get_asr_status(asr_state: State<'_, AsrState>) -> Result<AsrStatus, String> {
     let guard = asr_state
@@ -156,7 +145,9 @@ pub async fn recognize_audio(
             .runtime
             .as_mut()
             .ok_or_else(|| "ASR model is not loaded".to_string())?;
-        let text = runtime.recognize_wav_text(&wav_path)?;
+        let text = runtime
+            .recognize_wav_text(&wav_path)
+            .map_err(|err| format_recognition_error(model, err))?;
 
         Ok(AsrRecognitionResult {
             text,
@@ -168,65 +159,52 @@ pub async fn recognize_audio(
     .map_err(|err| format!("Failed to join ASR recognition task: {err}"))?
 }
 
-fn build_runtime(app: &AppHandle, model: AsrModelKind, mode: AsrExecutionMode) -> Result<AsrRuntime, String> {
+/// 根据模型类型和执行模式创建对应的 ASR 运行时。
+fn build_runtime(
+    app: &AppHandle,
+    model: AsrModelKind,
+    mode: AsrExecutionMode,
+) -> Result<DynAsrLoader, String> {
     match model {
         AsrModelKind::Qwen3Asr => {
-            let root = resolve_model_root(app, "Qwen3-ASR-onnx")?;
+            let root = resolve_model_root(app, "Qwen3-ASR-onnx", |root| {
+                root.join("model_0.6B").is_dir() && root.join("tokenizer").is_dir()
+            })?;
             let mut config = Qwen3AsrLoaderConfig::from_root(root, "model_0.6B");
-            config.execution_mode = match mode {
-                AsrExecutionMode::Auto => Qwen3ExecutionMode::Auto,
-                AsrExecutionMode::OnlyCpu => Qwen3ExecutionMode::CpuOnly,
-            };
+            config.runtime.execution_mode = map_execution_mode(mode);
             let loader = Qwen3AsrLoader::new(config)
-                .map_err(|err| format!("Qwen3-ASR 加载失败: {err:#}"))?;
-            Ok(AsrRuntime::Qwen3(loader))
+                .map_err(|err| format!("failed to load Qwen3-ASR: {err:#}"))?;
+            Ok(Box::new(loader))
         }
         AsrModelKind::SenseVoiceSmall => {
-            let root = resolve_model_root(app, "SenseVoiceSmall-onnx")?;
+            let root = resolve_model_root(app, "SenseVoiceSmall-onnx", |root| {
+                root.join("model_quant.onnx").is_file()
+                    && root.join("tokens.json").is_file()
+                    && root.join("am.mvn").is_file()
+            })?;
             let mut config = SenseVoiceSmallLoaderConfig::from_root(root);
-            config.execution_mode = match mode {
-                AsrExecutionMode::Auto => SenseVoiceExecutionMode::Auto,
-                AsrExecutionMode::OnlyCpu => SenseVoiceExecutionMode::CpuOnly,
-            };
+            config.runtime.execution_mode = map_execution_mode(mode);
             let loader = SenseVoiceSmallLoader::new(config)
-                .map_err(|err| format!("SenseVoiceSmall 加载失败: {err:#}"))?;
-            Ok(AsrRuntime::SenseVoiceSmall(loader))
+                .map_err(|err| format!("failed to load SenseVoiceSmall: {err:#}"))?;
+            Ok(Box::new(loader))
         }
     }
 }
 
-fn resolve_model_root(app: &AppHandle, relative: &str) -> Result<PathBuf, String> {
-    // 生产环境优先从本地数据目录读取模型。
-    // 这里同时兼容两种常见放置方式：
-    // 1. Tauri 应用专属目录: $APPLOCALDATA/<bundle-id>/...
-    // 2. 用户直接放在系统本地数据目录: $APPLOCALDATA/...
-    let app_local_data = app.path().app_local_data_dir().ok().map(|dir| dir.join(relative));
-    let local_data = app.path().local_data_dir().ok().map(|dir| dir.join(relative));
-    let dev = Some(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join(relative),
-    );
-
-    for candidate in [app_local_data, local_data, dev].into_iter().flatten() {
-        if model_root_is_valid(relative, &candidate) {
-            return Ok(candidate);
-        }
+/// 将对外暴露的执行模式映射为底层 ORT 执行模式。
+fn map_execution_mode(mode: AsrExecutionMode) -> ExecutionMode {
+    match mode {
+        AsrExecutionMode::Auto => ExecutionMode::Auto,
+        AsrExecutionMode::OnlyCpu => ExecutionMode::CpuOnly,
     }
-
-    Err(format!(
-        "未找到可用的 ASR 模型资源目录: {relative}，已检查 app_local_data_dir、local_data_dir 和开发环境 resources 目录"
-    ))
 }
 
-fn model_root_is_valid(relative: &str, root: &Path) -> bool {
-    match relative {
-        "Qwen3-ASR-onnx" => root.join("model_0.6B").is_dir() && root.join("tokenizer").is_dir(),
-        "SenseVoiceSmall-onnx" => {
-            root.join("model_quant.onnx").is_file()
-                && root.join("tokens.json").is_file()
-                && root.join("am.mvn").is_file()
+/// 根据模型类型格式化统一的识别错误信息。
+fn format_recognition_error(model: AsrModelKind, err: anyhow::Error) -> String {
+    match model {
+        AsrModelKind::Qwen3Asr => format!("Qwen3-ASR recognition failed: {err:#}"),
+        AsrModelKind::SenseVoiceSmall => {
+            format!("SenseVoiceSmall recognition failed: {err:#}")
         }
-        _ => root.exists(),
     }
 }
