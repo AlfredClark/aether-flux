@@ -46,7 +46,7 @@ impl SenseVoiceSmallLoaderConfig {
             frame_shift_ms: 10,
             lfr_m: 7,
             lfr_n: 6,
-            language_token: "<|zh|>".to_string(),
+            language_token: "<|auto|>".to_string(),
             enable_itn: true,
             runtime: OrtRuntimeConfig {
                 optimization_level: GraphOptimizationLevel::Level3,

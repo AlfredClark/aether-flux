@@ -32,6 +32,9 @@ ndarray = "0.17.2"
 ort = { version = "2.0.0-rc.12", features = ["cuda"] }
 realfft = "3.5.0"
 tokenizers = "0.22.2"
+jieba-rs = { version = "0.7", features = ["tfidf", "textrank"] }
+pinyin = "0.11.0"
+redb = "4.1.0"
 
 [profile.dev]
 incremental = true

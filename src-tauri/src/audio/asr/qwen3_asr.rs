@@ -48,7 +48,7 @@ impl Qwen3AsrLoaderConfig {
             preprocessor_config_json: root_dir.join("tokenizer/preprocessor_config.json"),
             tokenizer_config_json: root_dir.join("tokenizer/tokenizer_config.json"),
             max_new_tokens: 256,
-            language: None,
+            language: Some("auto".to_string()),
             runtime: OrtRuntimeConfig {
                 optimization_level: GraphOptimizationLevel::Level3,
                 ..OrtRuntimeConfig::default()
@@ -202,7 +202,7 @@ impl Qwen3AsrLoader {
     ///
     /// 仅传递音频 token 会导致模型缺少对话上下文，常见现象就是能够跑通推理但输出为空。
     fn build_prompt(&self, n_audio_tokens: usize) -> Result<Vec<i64>> {
-        let target_language = self.config.language.as_deref().unwrap_or("Chinese");
+        let target_language = self.config.language.as_deref().unwrap_or("auto");
         let prefix = self
             .tokenizer
             .encode("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n", false)
@@ -426,8 +426,8 @@ fn build_tokenizer(
     for (_, token) in entries {
         let added_token = AddedToken::from(token.content.clone(), token.special)
             .single_word(token.single_word)
-            .lstrip(token.l_strip)
-            .rstrip(token.r_strip)
+            .lstrip(token.lstrip)
+            .rstrip(token.rstrip)
             .normalized(token.normalized)
             .special(token.special);
         if token.special {
@@ -692,9 +692,9 @@ struct TokenizerConfigFile {
 #[derive(Debug, Deserialize)]
 struct AddedTokenFile {
     content: String,
-    l_strip: bool,
+    lstrip: bool,
     normalized: bool,
-    r_strip: bool,
+    rstrip: bool,
     single_word: bool,
     special: bool,
 }

@@ -2,7 +2,7 @@
   import "./layout.css";
   import settings from "$lib/stores/settings";
   import Default from "$lib/layouts/Default.svelte";
-  import GlobalModalDialog from "$lib/components/dialogs/GlobalModalDialog.svelte";
+  import GlobalDialog from "$lib/components/dialogs/GlobalDialog.svelte";
 
   const { children } = $props();
   settings.theme.subscribe((value) => {
@@ -22,4 +22,4 @@
   {@render children()}
 </Default>
 
-<GlobalModalDialog />
+<GlobalDialog />
