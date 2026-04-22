@@ -9,6 +9,9 @@
     id: string;
     name: string;
     description: string | null;
+    prefix: string | null;
+    suffix: string | null;
+    sortOrder: number;
     isDefault: boolean;
     isEnabled: boolean;
     entryTotal: number;
@@ -39,8 +42,12 @@
 
   let createWordbankName = "";
   let createWordbankDescription = "";
+  let createWordbankPrefix = "";
+  let createWordbankSuffix = "";
   let editWordbankName = "";
   let editWordbankDescription = "";
+  let editWordbankPrefix = "";
+  let editWordbankSuffix = "";
   let createDialogOpen = false;
   let editDialogOpen = false;
   let entryEditDialogOpen = false;
@@ -49,6 +56,9 @@
   let wordbankEditOriginal = "";
   let wordbankEditValue = "";
   let importInputElement: HTMLInputElement | undefined;
+  let draggedWordbankId = "";
+  let dropTargetWordbankId = "";
+  let dropTargetWordbankPosition: "before" | "after" | "" = "";
   let draggedEntryKey = "";
   let draggedValue = "";
   let dropTargetEntryKey = "";
@@ -64,11 +74,15 @@
     const bank = selectedWordbank();
     editWordbankName = bank?.name ?? "";
     editWordbankDescription = bank?.description ?? "";
+    editWordbankPrefix = bank?.prefix ?? "";
+    editWordbankSuffix = bank?.suffix ?? "";
   }
 
   function openCreateDialog() {
     createWordbankName = "";
     createWordbankDescription = "";
+    createWordbankPrefix = "";
+    createWordbankSuffix = "";
     createDialogOpen = true;
   }
 
@@ -178,10 +192,14 @@
     try {
       const created = await invoke<WordbankSummary>("create_wordbank", {
         name: createWordbankName,
-        description: createWordbankDescription || null
+        description: createWordbankDescription || null,
+        prefix: createWordbankPrefix || null,
+        suffix: createWordbankSuffix || null
       });
       createWordbankName = "";
       createWordbankDescription = "";
+      createWordbankPrefix = "";
+      createWordbankSuffix = "";
       createDialogOpen = false;
       await loadWordbanks(created.id);
     } catch (e) {
@@ -200,7 +218,9 @@
       const updated = await invoke<WordbankSummary>("update_wordbank", {
         wordbankId: selectedWordbankId,
         name: editWordbankName,
-        description: editWordbankDescription || null
+        description: editWordbankDescription || null,
+        prefix: editWordbankPrefix || null,
+        suffix: editWordbankSuffix || null
       });
       editDialogOpen = false;
       await loadWordbanks(updated.id);
@@ -482,8 +502,12 @@
       wordbankError = "";
       createWordbankName = "";
       createWordbankDescription = "";
+      createWordbankPrefix = "";
+      createWordbankSuffix = "";
       editWordbankName = "";
       editWordbankDescription = "";
+      editWordbankPrefix = "";
+      editWordbankSuffix = "";
       wordbankDraft = "";
       cancelWordbankEdit();
       void loadWordbanks();
@@ -495,6 +519,82 @@
       window.removeEventListener("asr:wordbank-reset", handleWordbankReset);
     };
   });
+
+  function renderWordbankName(bank: WordbankSummary) {
+    return `${bank.prefix ?? ""}${bank.name}${bank.suffix ?? ""}`;
+  }
+
+  function handleWordbankDragStart(event: DragEvent, wordbankId: string) {
+    const bank = wordBanks.find((item) => item.id === wordbankId);
+    if (!bank || bank.isDefault) return;
+
+    if (event.dataTransfer) {
+      event.dataTransfer.setData("text/plain", wordbankId);
+      event.dataTransfer.setDragImage(event.currentTarget as Element, 12, 12);
+      event.dataTransfer.effectAllowed = "move";
+    }
+    draggedWordbankId = wordbankId;
+  }
+
+  function handleWordbankDragEnd() {
+    draggedWordbankId = "";
+    dropTargetWordbankId = "";
+    dropTargetWordbankPosition = "";
+  }
+
+  function updateWordbankDropTarget(event: DragEvent, wordbankId: string) {
+    if (!draggedWordbankId || draggedWordbankId === wordbankId) return;
+
+    const currentTarget = event.currentTarget as HTMLDivElement;
+    const rect = currentTarget.getBoundingClientRect();
+    const offsetY = event.clientY - rect.top;
+    dropTargetWordbankId = wordbankId;
+    dropTargetWordbankPosition = offsetY < rect.height / 2 ? "before" : "after";
+  }
+
+  async function reorderWordbanks(targetWordbankId: string, position: "before" | "after") {
+    if (!draggedWordbankId || !targetWordbankId || draggedWordbankId === targetWordbankId) {
+      handleWordbankDragEnd();
+      return;
+    }
+
+    const movableBanks = wordBanks.filter((bank) => !bank.isDefault);
+    const nextIds = movableBanks.map((bank) => bank.id);
+    const fromIndex = nextIds.indexOf(draggedWordbankId);
+    const targetIndex = nextIds.indexOf(targetWordbankId);
+    if (fromIndex === -1 || targetIndex === -1) {
+      handleWordbankDragEnd();
+      return;
+    }
+
+    let insertIndex = position === "after" ? targetIndex + 1 : targetIndex;
+    nextIds.splice(fromIndex, 1);
+    if (fromIndex < insertIndex) {
+      insertIndex -= 1;
+    }
+    if (insertIndex < 0) insertIndex = 0;
+    if (insertIndex > nextIds.length) insertIndex = nextIds.length;
+    if (insertIndex === fromIndex) {
+      handleWordbankDragEnd();
+      return;
+    }
+
+    nextIds.splice(insertIndex, 0, draggedWordbankId);
+
+    wordbankSaving = true;
+    wordbankError = "";
+    try {
+      await invoke<WordbankSummary[]>("reorder_wordbanks", {
+        wordbankIds: nextIds
+      });
+      await loadWordbanks(selectedWordbankId);
+    } catch (e) {
+      wordbankError = String(e);
+    } finally {
+      wordbankSaving = false;
+      handleWordbankDragEnd();
+    }
+  }
 </script>
 
 <div class="mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col pb-10">
@@ -553,43 +653,54 @@
               <div class="space-y-2">
                 {#each wordBanks as bank (bank.id)}
                   <div
+                    class:opacity-80={draggedWordbankId === bank.id}
                     class={`rounded-xl border p-3 transition ${
                       bank.id === selectedWordbankId
                         ? "border-primary bg-primary/10"
                         : "border-base-300 bg-base-100 hover:bg-base-200"
-                    }`}>
+                    }`}
+                    role="listitem"
+                    on:dragover={(event) => {
+                      if (!bank.isDefault && draggedWordbankId && draggedWordbankId !== bank.id) {
+                        event.preventDefault();
+                        updateWordbankDropTarget(event, bank.id);
+                      }
+                    }}
+                    on:dragleave={() => {
+                      if (dropTargetWordbankId === bank.id) {
+                        dropTargetWordbankId = "";
+                        dropTargetWordbankPosition = "";
+                      }
+                    }}
+                    on:drop={(event) => {
+                      event.preventDefault();
+                      if (!bank.isDefault) {
+                        void reorderWordbanks(bank.id, dropTargetWordbankPosition || "before");
+                      }
+                    }}>
+                    {#if dropTargetWordbankId === bank.id && dropTargetWordbankPosition === "before"}
+                      <div class="pointer-events-none -mt-4 mb-3 h-0.5 rounded-full bg-primary"></div>
+                    {/if}
                     <div class="flex items-start justify-between gap-3">
                       <button class="min-w-0 flex-1 text-left" type="button" on:click={() => selectWordbank(bank.id)}>
-                        <span class="font-medium">{bank.name}</span>
-                        <span class="mt-1 text-xs text-base-content/60">
-                          {bank.description || m.tools_audio_asr_word_bank_management_description_empty()}
-                        </span>
-                        <span class="mt-2 font-mono text-xs text-base-content/50">
-                          {m.tools_audio_asr_word_bank_management_group_count({ count: bank.entryTotal })}
-                        </span>
+                        <span class="font-medium">{renderWordbankName(bank)}</span>
                       </button>
                       <div class="flex shrink-0 flex-wrap items-center justify-end gap-2">
-                        {#if bank.isDefault}
-                          <div class="badge badge-outline badge-primary">
-                            {m.tools_audio_asr_word_bank_management_default_badge()}
-                          </div>
+                        {#if !bank.isDefault}
+                          <button
+                            class="btn cursor-grab btn-ghost btn-xs active:cursor-grabbing"
+                            type="button"
+                            aria-label={m.tools_audio_asr_word_bank_management_bank_drag_handle_label()}
+                            title={m.tools_audio_asr_word_bank_management_bank_drag_handle_label()}
+                            draggable={!wordbankSaving}
+                            on:dragstart={(event) => handleWordbankDragStart(event, bank.id)}
+                            on:dragend={handleWordbankDragEnd}
+                            disabled={wordbankSaving}>
+                            ::
+                          </button>
                         {/if}
-                        <div class={`badge badge-outline ${bank.isEnabled ? "badge-success" : "badge-neutral"}`}>
-                          {bank.isEnabled
-                            ? m.tools_audio_asr_word_bank_management_enabled_badge()
-                            : m.tools_audio_asr_word_bank_management_disabled_badge()}
-                        </div>
                         <button
-                          class={`btn btn-xs ${bank.isEnabled ? "btn-outline" : "btn-success"}`}
-                          type="button"
-                          on:click|stopPropagation={() => void toggleWordbankEnabled(bank.id, !bank.isEnabled)}
-                          disabled={wordbankSaving || bank.isDefault}>
-                          {bank.isEnabled
-                            ? m.tools_audio_asr_word_bank_management_disable_action()
-                            : m.tools_audio_asr_word_bank_management_enable_action()}
-                        </button>
-                        <button
-                          class="btn btn-ghost btn-xs"
+                          class="btn btn-outline btn-xs"
                           type="button"
                           on:click|stopPropagation={() => openEditDialogFor(bank.id)}
                           disabled={wordbankSaving}>
@@ -611,6 +722,41 @@
                         </button>
                       </div>
                     </div>
+                    <div class="mt-1 flex items-center justify-between gap-3">
+                      <div class="flex min-w-0 flex-1 items-center gap-2 text-xs text-base-content/60">
+                        <span class="min-w-0 flex-1 truncate">
+                          {bank.description || m.tools_audio_asr_word_bank_management_description_empty()}
+                        </span>
+                        <span class="shrink-0 font-mono text-base-content/50">
+                          {m.tools_audio_asr_word_bank_management_group_count({ count: bank.entryTotal })}
+                        </span>
+                      </div>
+                      <div class="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                        {#if bank.isDefault}
+                          <div class="badge badge-outline badge-primary">
+                            {m.tools_audio_asr_word_bank_management_default_badge()}
+                          </div>
+                        {/if}
+                        <button
+                          class={`badge h-auto badge-outline px-3 py-1 ${
+                            bank.isEnabled ? "badge-success" : "badge-neutral"
+                          } ${bank.isDefault ? "cursor-default" : "cursor-pointer"}`}
+                          type="button"
+                          on:click|stopPropagation={() => {
+                            if (!bank.isDefault) {
+                              void toggleWordbankEnabled(bank.id, !bank.isEnabled);
+                            }
+                          }}
+                          disabled={wordbankSaving || bank.isDefault}>
+                          {bank.isEnabled
+                            ? m.tools_audio_asr_word_bank_management_enabled_badge()
+                            : m.tools_audio_asr_word_bank_management_disabled_badge()}
+                        </button>
+                      </div>
+                    </div>
+                    {#if dropTargetWordbankId === bank.id && dropTargetWordbankPosition === "after"}
+                      <div class="pointer-events-none mt-3 h-0.5 rounded-full bg-primary"></div>
+                    {/if}
                   </div>
                 {/each}
               </div>
@@ -793,6 +939,28 @@
         placeholder={m.tools_audio_asr_word_bank_management_description_placeholder()}
         disabled={wordbankSaving}></textarea>
     </div>
+    <div class="grid gap-4 md:grid-cols-2">
+      <div class="form-control">
+        <div class="label">
+          <span class="label-text">{m.tools_audio_asr_word_bank_management_prefix_label()}</span>
+        </div>
+        <input
+          class="input-bordered input w-full"
+          bind:value={createWordbankPrefix}
+          placeholder={m.tools_audio_asr_word_bank_management_prefix_placeholder()}
+          disabled={wordbankSaving} />
+      </div>
+      <div class="form-control">
+        <div class="label">
+          <span class="label-text">{m.tools_audio_asr_word_bank_management_suffix_label()}</span>
+        </div>
+        <input
+          class="input-bordered input w-full"
+          bind:value={createWordbankSuffix}
+          placeholder={m.tools_audio_asr_word_bank_management_suffix_placeholder()}
+          disabled={wordbankSaving} />
+      </div>
+    </div>
     <div class="modal-action">
       <button class="btn" type="button" on:click={() => (createDialogOpen = false)} disabled={wordbankSaving}>
         {m.msg_cancel()}
@@ -831,6 +999,28 @@
           bind:value={editWordbankDescription}
           placeholder={m.tools_audio_asr_word_bank_management_description_placeholder()}
           disabled={wordbankSaving}></textarea>
+      </div>
+      <div class="grid gap-4 md:grid-cols-2">
+        <div class="form-control">
+          <div class="label">
+            <span class="label-text">{m.tools_audio_asr_word_bank_management_prefix_label()}</span>
+          </div>
+          <input
+            class="input-bordered input w-full"
+            bind:value={editWordbankPrefix}
+            placeholder={m.tools_audio_asr_word_bank_management_prefix_placeholder()}
+            disabled={wordbankSaving} />
+        </div>
+        <div class="form-control">
+          <div class="label">
+            <span class="label-text">{m.tools_audio_asr_word_bank_management_suffix_label()}</span>
+          </div>
+          <input
+            class="input-bordered input w-full"
+            bind:value={editWordbankSuffix}
+            placeholder={m.tools_audio_asr_word_bank_management_suffix_placeholder()}
+            disabled={wordbankSaving} />
+        </div>
       </div>
       <div class="modal-action">
         <button class="btn" type="button" on:click={() => (editDialogOpen = false)} disabled={wordbankSaving}>

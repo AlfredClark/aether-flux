@@ -36,6 +36,17 @@
     audioPath: string;
   };
 
+  type WordbankTokenHomophoneOptions = {
+    token: string;
+    options: string[];
+  };
+
+  type ResultToken = {
+    id: string;
+    value: string;
+    options: string[];
+  };
+
   const modelOptions: Array<{ value: AsrModelKind; label: string }> = [
     { value: "sense_voice_small", label: m.tools_audio_asr_model_sense_voice_small() },
     { value: "qwen3_asr", label: m.tools_audio_asr_model_qwen3_asr() }
@@ -58,14 +69,19 @@
   let selectedModel: AsrModelKind = $state("sense_voice_small");
   let selectedExecutionMode: AsrExecutionMode = $state("auto");
   let selectedLanguage: AsrLanguage = $state("auto");
+  let enableFitting = $state(false);
   let enableDecomposition = $state(false);
   let asrStatus: AsrStatus = $state({ isLoaded: false, currentModel: null, currentMode: null, currentLanguage: null });
   let recording = $state(false);
   let loadingModel = $state(false);
+  let rebuildingFitter = $state(false);
   let rebuildingDecomposer = $state(false);
   let recognizing = $state(false);
+  let copyingResult = $state(false);
   let audioUrl = $state("");
-  let recognitionText: string | string[] = $state("");
+  let editableResultText = $state("");
+  let resultTokens: ResultToken[] = $state([]);
+  let resultEditorEnabled = $state(true);
   let error = $state("");
 
   function modelLabel(model: AsrModelKind | null) {
@@ -86,8 +102,34 @@
     return asrStatus.isLoaded ? (asrStatus.currentLanguage ?? selectedLanguage) : selectedLanguage;
   }
 
+  function resetRecognitionResult() {
+    resultTokens = [];
+    editableResultText = "";
+    resultEditorEnabled = true;
+  }
+
+  function currentResultText() {
+    if (resultTokens.length > 0 && !resultEditorEnabled) {
+      return resultTokens.map((token) => token.value).join("");
+    }
+    return editableResultText;
+  }
+
+  function syncEditableResultTextFromTokens() {
+    editableResultText = resultTokens.map((token) => token.value).join("");
+  }
+
+  function hasRecognitionResult() {
+    return currentResultText().trim().length > 0 || resultTokens.length > 0;
+  }
+
+  function showTokenResultView() {
+    return resultTokens.length > 0 && !resultEditorEnabled;
+  }
+
   $effect(() => {
     if (!supportsDecomposition(currentLanguageForDecomposition())) {
+      enableFitting = false;
       enableDecomposition = false;
     }
   });
@@ -114,7 +156,7 @@
 
   async function startRecording() {
     error = "";
-    recognitionText = "";
+    resetRecognitionResult();
 
     const dir = await appCacheDir();
     const recorderDir = await join(dir, "recorder");
@@ -147,9 +189,30 @@
 
       const recognition = await invoke<AsrRecognitionResult>("recognize_audio", {
         wavPath: result.file_path,
+        enableFitting,
         enableDecomposition
       });
-      recognitionText = recognition.text || m.tools_audio_asr_recognition_empty_text();
+      if (Array.isArray(recognition.text) && recognition.text.length > 0) {
+        const homophoneOptions = await invoke<WordbankTokenHomophoneOptions[]>("list_enabled_wordbank_homophones", {
+          tokens: recognition.text
+        });
+        const resultId = Date.now();
+        resultTokens = recognition.text.map((token, index) => {
+          const options = homophoneOptions[index]?.options ?? [];
+          return {
+            id: `${resultId}-${index}`,
+            value: token,
+            options
+          };
+        });
+        syncEditableResultTextFromTokens();
+        resultEditorEnabled = false;
+      } else {
+        resultTokens = [];
+        editableResultText =
+          (typeof recognition.text === "string" ? recognition.text : "") || m.tools_audio_asr_recognition_empty_text();
+        resultEditorEnabled = true;
+      }
     } catch (e) {
       error = String(e);
     } finally {
@@ -160,7 +223,7 @@
 
   async function reloadCurrentModel() {
     if (recording || recognizing) return;
-    recognitionText = "";
+    resetRecognitionResult();
     await loadAsrModel(selectedModel, selectedExecutionMode, selectedLanguage);
   }
 
@@ -174,6 +237,57 @@
       error = String(e);
     } finally {
       rebuildingDecomposer = false;
+    }
+  }
+
+  async function rebuildCurrentFitter() {
+    if (recording || recognizing || loadingModel || !asrStatus.isLoaded || !enableFitting) return;
+    error = "";
+    rebuildingFitter = true;
+    try {
+      await invoke("rebuild_asr_fitter");
+    } catch (e) {
+      error = String(e);
+    } finally {
+      rebuildingFitter = false;
+    }
+  }
+
+  async function copyRecognitionResult() {
+    const text = currentResultText().trim();
+    if (!text) return;
+
+    error = "";
+    copyingResult = true;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      copyingResult = false;
+    }
+  }
+
+  function enableResultEditor() {
+    if (resultTokens.length === 0) {
+      resultEditorEnabled = true;
+      return;
+    }
+
+    syncEditableResultTextFromTokens();
+    resultEditorEnabled = true;
+  }
+
+  function updateResultToken(index: number, nextValue: string) {
+    if (!resultTokens[index]) return;
+    resultTokens[index].value = nextValue;
+    syncEditableResultTextFromTokens();
+  }
+
+  function selectResultTokenOption(index: number, nextValue: string, dropdown?: HTMLDetailsElement | null) {
+    updateResultToken(index, nextValue);
+    if (dropdown) {
+      dropdown.open = false;
     }
   }
 
@@ -295,6 +409,24 @@
 
         {#if supportsDecomposition(currentLanguageForDecomposition())}
           <label class="label cursor-pointer gap-3 rounded-lg border border-base-300 px-4 py-2">
+            <span class="label-text">{m.tools_audio_asr_fitting_toggle()}</span>
+            <input
+              type="checkbox"
+              class="checkbox checkbox-sm"
+              bind:checked={enableFitting}
+              disabled={loadingModel || recording || recognizing || !asrStatus.isLoaded} />
+          </label>
+
+          {#if enableFitting}
+            <button
+              class="btn btn-outline"
+              onclick={() => void rebuildCurrentFitter()}
+              disabled={loadingModel || rebuildingFitter || recording || recognizing || !asrStatus.isLoaded}>
+              {m.tools_audio_asr_rebuild_fitter()}
+            </button>
+          {/if}
+
+          <label class="label cursor-pointer gap-3 rounded-lg border border-base-300 px-4 py-2">
             <span class="label-text">{m.tools_audio_asr_decomposition_toggle()}</span>
             <input
               type="checkbox"
@@ -347,22 +479,74 @@
       {/if}
 
       <div class="flex min-h-0 flex-1 flex-col space-y-2">
-        <div class="shrink-0 text-sm font-medium">{m.tools_audio_asr_result_label()}</div>
+        <div class="flex shrink-0 flex-wrap items-center justify-between gap-3">
+          <div class="text-sm font-medium">{m.tools_audio_asr_result_label()}</div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            {#if showTokenResultView()}
+              <button class="btn btn-outline btn-sm" onclick={enableResultEditor}>
+                {m.tools_audio_asr_result_edit_text_action()}
+              </button>
+            {/if}
+
+            <button
+              class="btn btn-outline btn-sm"
+              onclick={() => void copyRecognitionResult()}
+              disabled={copyingResult || !hasRecognitionResult()}>
+              {m.tools_audio_asr_result_copy_action()}
+            </button>
+          </div>
+        </div>
+
         <div class="min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-100 p-4">
-          {#if !recognitionText || (Array.isArray(recognitionText) && recognitionText.length === 0)}
+          {#if !hasRecognitionResult()}
             <div class="whitespace-pre-wrap text-base-content/50">
               {m.tools_audio_asr_result_placeholder()}
             </div>
-          {:else if Array.isArray(recognitionText)}
+          {:else if showTokenResultView()}
             <div class="flex flex-wrap gap-2">
-              {#each recognitionText as token, index (`${token}-${index}`)}
-                <div class="rounded-lg border border-base-300 bg-base-200 px-3 py-1.5 text-sm shadow-sm">
-                  {token}
-                </div>
+              {#each resultTokens as token, index (token.id)}
+                {#if token.options.length > 1}
+                  <details class="dropdown">
+                    <summary
+                      class="btn h-auto min-h-0 max-w-52 justify-between rounded-xl border-base-300 bg-base-200 px-3 py-2 text-sm font-normal shadow-sm btn-sm">
+                      <span class="truncate">{token.value}</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        class="size-4 shrink-0 opacity-60">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6" />
+                      </svg>
+                    </summary>
+                    <ul
+                      class="dropdown-content menu z-10 mt-2 w-44 rounded-box border border-base-300 bg-base-100 p-2 shadow-xl">
+                      {#each token.options as option (`${token.id}-${option}`)}
+                        <li>
+                          <button
+                            type="button"
+                            class:active={option === token.value}
+                            onclick={(event) => selectResultTokenOption(index, option, event.currentTarget.closest("details"))}>
+                            {option}
+                          </button>
+                        </li>
+                      {/each}
+                    </ul>
+                  </details>
+                {:else}
+                  <div class="rounded-lg border border-base-300 bg-base-200 px-3 py-1.5 text-sm shadow-sm">
+                    {token.value}
+                  </div>
+                {/if}
               {/each}
             </div>
           {:else}
-            <div class="wrap-break-word whitespace-pre-wrap">{recognitionText}</div>
+            <textarea
+              class="textarea-bordered textarea h-full w-full resize-none bg-base-100 leading-7"
+              bind:value={editableResultText}
+              spellcheck={false}></textarea>
           {/if}
         </div>
       </div>

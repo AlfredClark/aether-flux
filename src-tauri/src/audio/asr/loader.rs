@@ -137,7 +137,7 @@ where
     ))
 }
 
-/// 根据执行模式为 `SessionBuilder` 追加合适的执行提供者。
+/// 根据执行模式为 `SessionBuilder` 追加合适地执行提供者。
 fn configure_execution_providers(
     builder: SessionBuilder,
     config: &OrtRuntimeConfig,

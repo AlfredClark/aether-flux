@@ -1,7 +1,7 @@
 mod loader;
+pub mod processor;
 mod qwen3_asr;
 mod sense_voice_small;
-pub mod processor;
 pub mod wordbank;
 
 use std::{
@@ -16,10 +16,12 @@ use tauri::{async_runtime, AppHandle, Manager, State};
 
 use self::{
     loader::{resolve_model_root, DynAsrLoader, ExecutionMode},
-    processor::JiebaDecomposer,
+    processor::{JiebaDecomposer, WordbankFitter, WordbankFitterReplacement},
     qwen3_asr::{Qwen3AsrLoader, Qwen3AsrLoaderConfig},
     sense_voice_small::{SenseVoiceSmallLoader, SenseVoiceSmallLoaderConfig},
-    wordbank::{collect_enabled_wordbank_words, WordbankState},
+    wordbank::{
+        collect_enabled_wordbank_fitter_entries, collect_enabled_wordbank_words, WordbankState,
+    },
 };
 
 /// ASR 模型类型
@@ -75,6 +77,7 @@ pub(crate) struct AsrStateInner {
     pub(crate) current_mode: Option<AsrExecutionMode>,
     pub(crate) current_language: Option<AsrLanguage>,
     pub(crate) runtime: Option<DynAsrLoader>,
+    pub(crate) fitter: Option<WordbankFitter>,
     pub(crate) decomposer: Option<JiebaDecomposer>,
 }
 
@@ -144,9 +147,11 @@ pub async fn load_asr_model(
 ) -> Result<AsrStatus, String> {
     let app_for_runtime = app.clone();
     let state = Arc::clone(&asr_state.inner);
-    let runtime = async_runtime::spawn_blocking(move || build_runtime(&app_for_runtime, model, mode, language))
-        .await
-        .map_err(|err| format!("Failed to join ASR loader task: {err}"))??;
+    let runtime = async_runtime::spawn_blocking(move || {
+        build_runtime(&app_for_runtime, model, mode, language)
+    })
+    .await
+    .map_err(|err| format!("Failed to join ASR loader task: {err}"))??;
 
     let mut guard = state
         .lock()
@@ -156,6 +161,7 @@ pub async fn load_asr_model(
     guard.current_language = Some(language);
     guard.runtime = Some(runtime);
     drop(guard);
+    reinitialize_asr_fitter(&app, &wordbank_state, &asr_state)?;
     reinitialize_asr_decomposer(&app, &wordbank_state, &asr_state)?;
 
     let guard = asr_state
@@ -176,6 +182,7 @@ pub fn destroy_asr_model(asr_state: State<'_, AsrState>) -> Result<(), String> {
     guard.current_mode = None;
     guard.current_language = None;
     guard.runtime = None;
+    guard.fitter = None;
     guard.decomposer = None;
     Ok(())
 }
@@ -185,7 +192,8 @@ pub fn get_asr_recording_cache_stats(app: AppHandle) -> Result<AsrRecordingCache
     let cache_dir = resolve_recorder_cache_dir(&app)
         .map_err(|err| format!("failed to resolve recorder cache dir: {err:#}"))?;
 
-    collect_wav_cache_stats(&cache_dir).map_err(|err| format!("failed to collect cache stats: {err:#}"))
+    collect_wav_cache_stats(&cache_dir)
+        .map_err(|err| format!("failed to collect cache stats: {err:#}"))
 }
 
 #[tauri::command]
@@ -193,8 +201,10 @@ pub fn clear_asr_recording_cache(app: AppHandle) -> Result<AsrRecordingCacheStat
     let cache_dir = resolve_recorder_cache_dir(&app)
         .map_err(|err| format!("failed to resolve recorder cache dir: {err:#}"))?;
 
-    clear_wav_cache_files(&cache_dir).map_err(|err| format!("failed to clear recording cache: {err:#}"))?;
-    collect_wav_cache_stats(&cache_dir).map_err(|err| format!("failed to collect cache stats: {err:#}"))
+    clear_wav_cache_files(&cache_dir)
+        .map_err(|err| format!("failed to clear recording cache: {err:#}"))?;
+    collect_wav_cache_stats(&cache_dir)
+        .map_err(|err| format!("failed to collect cache stats: {err:#}"))
 }
 
 #[tauri::command]
@@ -206,10 +216,20 @@ pub fn rebuild_asr_decomposer(
     reinitialize_asr_decomposer(&app, &wordbank_state, &asr_state)
 }
 
+#[tauri::command]
+pub fn rebuild_asr_fitter(
+    app: AppHandle,
+    asr_state: State<'_, AsrState>,
+    wordbank_state: State<'_, WordbankState>,
+) -> Result<(), String> {
+    reinitialize_asr_fitter(&app, &wordbank_state, &asr_state)
+}
+
 /// 停止录音后立即调用该命令执行离线识别，并把文本结果回传给前端页面。
 #[tauri::command]
 pub async fn recognize_audio(
     wav_path: String,
+    enable_fitting: bool,
     enable_decomposition: bool,
     asr_state: State<'_, AsrState>,
 ) -> Result<AsrRecognitionResult, String> {
@@ -232,6 +252,7 @@ pub async fn recognize_audio(
         let text = runtime
             .recognize_wav_text(&wav_path)
             .map_err(|err| format_recognition_error(model, err))?;
+        let text = maybe_fit_text(&guard, language, enable_fitting, text)?;
         let text = maybe_decompose_text(&guard, language, enable_decomposition, text)?;
 
         Ok(AsrRecognitionResult {
@@ -242,6 +263,26 @@ pub async fn recognize_audio(
     })
     .await
     .map_err(|err| format!("Failed to join ASR recognition task: {err}"))?
+}
+
+/// 在启用词库拟合且语言允许的前提下，对识别文本执行拼音词库拟合。
+fn maybe_fit_text(
+    inner: &AsrStateInner,
+    language: AsrLanguage,
+    enable_fitting: bool,
+    text: String,
+) -> Result<String, String> {
+    if !enable_fitting || !supports_decomposition(language) || text.trim().is_empty() {
+        return Ok(text);
+    }
+
+    let fitter = inner
+        .fitter
+        .as_ref()
+        .ok_or_else(|| "ASR fitter is not loaded".to_string())?;
+    fitter
+        .fit(&text)
+        .map_err(|err| format!("ASR fitting failed: {err:#}"))
 }
 
 /// 在启用分词且语言允许的前提下，对识别文本执行 jieba 分词。
@@ -290,6 +331,40 @@ pub(crate) fn reinitialize_asr_decomposer(
         .lock()
         .map_err(|_| "Failed to lock ASR state".to_string())?;
     guard.decomposer = Some(JiebaDecomposer::new(enabled_words));
+    Ok(())
+}
+
+pub(crate) fn reinitialize_asr_fitter(
+    app: &AppHandle,
+    wordbank_state: &WordbankState,
+    asr_state: &AsrState,
+) -> Result<(), String> {
+    let mut guard = asr_state
+        .inner
+        .lock()
+        .map_err(|_| "Failed to lock ASR state".to_string())?;
+    if guard.runtime.is_none() {
+        guard.fitter = None;
+        return Err("ASR model is not loaded".to_string());
+    }
+    drop(guard);
+
+    let fitter_entries = collect_enabled_wordbank_fitter_entries(app, wordbank_state)?;
+    let preferred_words = fitter_entries
+        .into_iter()
+        .map(|entry| WordbankFitterReplacement {
+            key: entry.key,
+            value: entry.value,
+            prefix: entry.prefix,
+            suffix: entry.suffix,
+        })
+        .collect::<Vec<_>>();
+
+    let mut guard = asr_state
+        .inner
+        .lock()
+        .map_err(|_| "Failed to lock ASR state".to_string())?;
+    guard.fitter = Some(WordbankFitter::new(preferred_words));
     Ok(())
 }
 

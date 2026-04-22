@@ -35,6 +35,7 @@ tokenizers = "0.22.2"
 jieba-rs = { version = "0.7", features = ["tfidf", "textrank"] }
 pinyin = "0.11.0"
 redb = "4.1.0"
+tauri-plugin-dialog = "2"
 
 [profile.dev]
 incremental = true

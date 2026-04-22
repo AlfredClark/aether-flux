@@ -8,11 +8,15 @@ use std::{
 
 use anyhow::{anyhow, ensure, Context, Result};
 use pinyin::ToPinyin;
-use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable, ReadableTableMetadata, TableDefinition};
+use redb::{
+    Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
+    ReadableTableMetadata, TableDefinition,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime, AppHandle, Manager, State};
 
 const WORDBANK_FILENAME: &str = "wordbank.redb";
+const WORDBANK_BACKUP_DIRNAME: &str = "backups";
 const WORDBANK_META_TABLE: TableDefinition<&str, &str> = TableDefinition::new("wordbank_meta");
 const DEFAULT_WORDBANK_ID: &str = "default";
 const DEFAULT_WORDBANK_NAME: &str = "Default";
@@ -23,24 +27,44 @@ pub struct WordbankState {
     pub(crate) inner: Arc<Mutex<Option<WordbankLoader>>>,
 }
 
-/// 字库元信息。
+/// 词库元信息。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WordbankSummary {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+    pub sort_order: u64,
     pub is_default: bool,
     pub is_enabled: bool,
     pub entry_total: usize,
 }
 
 /// 面向前端返回的词条分组条目。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WordbankEntry {
     pub key: String,
     pub values: Vec<String>,
+}
+
+/// 面向前端返回的分词同音候选项。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordbankTokenHomophoneOptions {
+    pub token: String,
+    pub options: Vec<String>,
+}
+
+/// 用于 ASR 词库拟合器的启用词条。
+#[derive(Debug, Clone)]
+pub struct WordbankFitterEntry {
+    pub key: String,
+    pub value: String,
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
 }
 
 /// 词条列表查询结果。
@@ -58,10 +82,41 @@ pub struct WordbankBatchResult {
     pub accepted_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordbankBackupResult {
+    pub backup_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WordbankExportPackage {
+    version: u32,
+    exported_at_unix_seconds: u64,
+    wordbanks: Vec<WordbankExportBank>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WordbankExportBank {
+    name: String,
+    description: Option<String>,
+    prefix: Option<String>,
+    suffix: Option<String>,
+    sort_order: u64,
+    is_default: bool,
+    is_enabled: bool,
+    entries: Vec<WordbankEntry>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WordbankMetaRecord {
     name: String,
     description: Option<String>,
+    prefix: Option<String>,
+    suffix: Option<String>,
+    #[serde(default)]
+    sort_order: u64,
     is_default: bool,
     is_enabled: bool,
 }
@@ -78,7 +133,7 @@ pub(crate) struct WordbankLoader {
 }
 
 impl WordbankLoader {
-    /// 打开或创建词库数据库，并确保元表与默认字库存在。
+    /// 打开或创建词库数据库，并确保元表与默认词库存在。
     fn open(path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -96,7 +151,10 @@ impl WordbankLoader {
     }
 
     fn initialize(&mut self) -> Result<()> {
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         write_txn
             .open_table(WORDBANK_META_TABLE)
             .context("failed to open wordbank metadata table")?;
@@ -115,6 +173,9 @@ impl WordbankLoader {
                 let record = WordbankMetaRecord {
                     name: DEFAULT_WORDBANK_NAME.to_string(),
                     description: None,
+                    prefix: None,
+                    suffix: None,
+                    sort_order: 0,
                     is_default: true,
                     is_enabled: true,
                 };
@@ -130,9 +191,12 @@ impl WordbankLoader {
         Ok(())
     }
 
-    /// 列出全部字库。
+    /// 列出全部词库。
     fn list_wordbanks(&mut self) -> Result<Vec<WordbankSummary>> {
-        let read_txn = self.db.begin_read().context("failed to open wordbank read txn")?;
+        let read_txn = self
+            .db
+            .begin_read()
+            .context("failed to open wordbank read txn")?;
         let meta_table = read_txn
             .open_table(WORDBANK_META_TABLE)
             .context("failed to open wordbank metadata table")?;
@@ -150,33 +214,42 @@ impl WordbankLoader {
                 id,
                 name: record.name,
                 description: record.description,
+                prefix: record.prefix,
+                suffix: record.suffix,
+                sort_order: record.sort_order,
                 is_default: record.is_default,
                 is_enabled: record.is_enabled,
                 entry_total,
             });
         }
 
-        banks.sort_by(|left, right| {
-            right
-                .is_default
-                .cmp(&left.is_default)
-                .then_with(|| left.name.cmp(&right.name))
-                .then_with(|| left.id.cmp(&right.id))
-        });
+        banks.sort_by(|left, right| sort_wordbank_summary(left, right));
         Ok(banks)
     }
 
-    /// 创建一个新的字库。
-    fn create_wordbank(&mut self, name: &str, description: Option<&str>) -> Result<WordbankSummary> {
+    /// 创建一个新的词库。
+    fn create_wordbank(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        prefix: Option<&str>,
+        suffix: Option<&str>,
+    ) -> Result<WordbankSummary> {
         let record = WordbankMetaRecord {
             name: normalize_bank_name(name)?,
             description: normalize_description(description),
+            prefix: normalize_affix(prefix),
+            suffix: normalize_affix(suffix),
+            sort_order: self.next_non_default_sort_order()?,
             is_default: false,
             is_enabled: true,
         };
         let id = generate_wordbank_id();
 
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         let table_names = self.table_names(&id);
         ensure_wordbank_tables(&write_txn, table_names.0, table_names.1, table_names.2)?;
         {
@@ -195,24 +268,34 @@ impl WordbankLoader {
             id,
             name: record.name,
             description: record.description,
+            prefix: record.prefix,
+            suffix: record.suffix,
+            sort_order: record.sort_order,
             is_default: false,
             is_enabled: true,
             entry_total: 0,
         })
     }
 
-    /// 更新字库名称与简介。
+    /// 更新词库名称与简介。
     fn update_wordbank(
         &mut self,
         wordbank_id: &str,
         name: &str,
         description: Option<&str>,
+        prefix: Option<&str>,
+        suffix: Option<&str>,
     ) -> Result<WordbankSummary> {
         let wordbank_id = normalize_wordbank_id(wordbank_id)?;
         let updated_name = normalize_bank_name(name)?;
         let updated_description = normalize_description(description);
+        let updated_prefix = normalize_affix(prefix);
+        let updated_suffix = normalize_affix(suffix);
 
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         let record = {
             let mut record = {
                 let meta_table = write_txn
@@ -226,6 +309,8 @@ impl WordbankLoader {
             };
             record.name = updated_name;
             record.description = updated_description;
+            record.prefix = updated_prefix;
+            record.suffix = updated_suffix;
             let mut meta_table = write_txn
                 .open_table(WORDBANK_META_TABLE)
                 .context("failed to reopen wordbank metadata table")?;
@@ -243,16 +328,26 @@ impl WordbankLoader {
             id: wordbank_id,
             name: record.name,
             description: record.description,
+            prefix: record.prefix,
+            suffix: record.suffix,
+            sort_order: record.sort_order,
             is_default: record.is_default,
             is_enabled: record.is_enabled,
             entry_total,
         })
     }
 
-    fn set_wordbank_enabled(&mut self, wordbank_id: &str, enabled: bool) -> Result<WordbankSummary> {
+    fn set_wordbank_enabled(
+        &mut self,
+        wordbank_id: &str,
+        enabled: bool,
+    ) -> Result<WordbankSummary> {
         let wordbank_id = normalize_wordbank_id(wordbank_id)?;
 
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         let record = {
             let mut record = {
                 let meta_table = write_txn
@@ -273,7 +368,9 @@ impl WordbankLoader {
                 .context("failed to reopen wordbank metadata table")?;
             meta_table
                 .insert(wordbank_id.as_str(), encode_meta_record(&record)?.as_str())
-                .with_context(|| format!("failed to update wordbank enabled state for '{wordbank_id}'"))?;
+                .with_context(|| {
+                    format!("failed to update wordbank enabled state for '{wordbank_id}'")
+                })?;
             record
         };
         write_txn
@@ -285,17 +382,90 @@ impl WordbankLoader {
             id: wordbank_id,
             name: record.name,
             description: record.description,
+            prefix: record.prefix,
+            suffix: record.suffix,
+            sort_order: record.sort_order,
             is_default: record.is_default,
             is_enabled: record.is_enabled,
             entry_total,
         })
     }
 
-    /// 删除一个非默认字库，并直接删除其对应的 redb 表。
+    fn reorder_wordbanks(&mut self, wordbank_ids: Vec<String>) -> Result<Vec<WordbankSummary>> {
+        let normalized_ids = wordbank_ids
+            .into_iter()
+            .map(|id| normalize_wordbank_id(&id))
+            .collect::<Result<Vec<_>>>()?;
+
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
+        let existing_records = {
+            let meta_table = write_txn
+                .open_table(WORDBANK_META_TABLE)
+                .context("failed to open wordbank metadata table")?;
+            let mut records = Vec::<(String, WordbankMetaRecord)>::new();
+            let mut iter = meta_table
+                .iter()
+                .context("failed to iterate wordbank metadata")?;
+            while let Some(item) = iter.next() {
+                let entry = item.context("failed to read wordbank metadata entry")?;
+                records.push((
+                    entry.0.value().to_string(),
+                    decode_meta_record(entry.1.value())?,
+                ));
+            }
+            records
+        };
+
+        let expected_ids = existing_records
+            .iter()
+            .filter(|(_, record)| !record.is_default)
+            .map(|(id, _)| id.clone())
+            .collect::<HashSet<_>>();
+        let provided_ids = normalized_ids.iter().cloned().collect::<HashSet<_>>();
+        ensure!(
+            expected_ids == provided_ids,
+            "reordered wordbanks must contain exactly all non-default wordbanks"
+        );
+
+        {
+            let mut meta_table = write_txn
+                .open_table(WORDBANK_META_TABLE)
+                .context("failed to reopen wordbank metadata table")?;
+            for (index, wordbank_id) in normalized_ids.iter().enumerate() {
+                let existing_value = meta_table
+                    .get(wordbank_id.as_str())
+                    .with_context(|| format!("failed to query wordbank '{wordbank_id}'"))?
+                    .ok_or_else(|| anyhow!("wordbank '{wordbank_id}' was not found"))?
+                    .value()
+                    .to_string();
+                let mut record = decode_meta_record(existing_value.as_str())?;
+                ensure!(!record.is_default, "default wordbank cannot be reordered");
+                record.sort_order = (index as u64) + 1;
+                meta_table
+                    .insert(wordbank_id.as_str(), encode_meta_record(&record)?.as_str())
+                    .with_context(|| {
+                        format!("failed to update wordbank order for '{wordbank_id}'")
+                    })?;
+            }
+        }
+
+        write_txn
+            .commit()
+            .context("failed to commit wordbank reorder")?;
+        self.list_wordbanks()
+    }
+
+    /// 删除一个非默认词库，并直接删除其对应的 redb 表。
     fn delete_wordbank(&mut self, wordbank_id: &str) -> Result<()> {
         let wordbank_id = normalize_wordbank_id(wordbank_id)?;
 
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         let record = {
             let meta_table = write_txn
                 .open_table(WORDBANK_META_TABLE)
@@ -335,10 +505,13 @@ impl WordbankLoader {
         Ok(())
     }
 
-    /// 清空指定字库内容，但保留其表结构。
+    /// 清空指定词库内容，但保留其表结构。
     fn clear_wordbank(&mut self, wordbank_id: &str) -> Result<()> {
         let wordbank_id = normalize_wordbank_id(wordbank_id)?;
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         let table_names = self.table_names(&wordbank_id);
 
         ensure_wordbank_exists_in_write(&write_txn, &wordbank_id)?;
@@ -425,8 +598,12 @@ impl WordbankLoader {
         Ok(())
     }
 
-    /// 按可选查询条件列出指定字库中的全部词条分组。
-    fn list_entries(&mut self, wordbank_id: &str, query: Option<&str>) -> Result<WordbankListResult> {
+    /// 按可选查询条件列出指定词库中的全部词条分组。
+    fn list_entries(
+        &mut self,
+        wordbank_id: &str,
+        query: Option<&str>,
+    ) -> Result<WordbankListResult> {
         let wordbank_id = normalize_wordbank_id(wordbank_id)?;
         let table_names = self.table_names(&wordbank_id);
         let normalized_query = query
@@ -434,7 +611,10 @@ impl WordbankLoader {
             .filter(|query| !query.is_empty())
             .map(|query| query.to_lowercase());
 
-        let read_txn = self.db.begin_read().context("failed to open wordbank read txn")?;
+        let read_txn = self
+            .db
+            .begin_read()
+            .context("failed to open wordbank read txn")?;
         ensure_wordbank_exists_in_read(&read_txn, &wordbank_id)?;
         let word_table = open_word_table_read(&read_txn, table_names.0)
             .with_context(|| format!("failed to open word table for '{wordbank_id}'"))?;
@@ -444,17 +624,22 @@ impl WordbankLoader {
             .with_context(|| format!("failed to open order table for '{wordbank_id}'"))?;
 
         let mut entries = Vec::new();
-        let mut iter = word_table.iter().context("failed to iterate wordbank entries")?;
+        let mut iter = word_table
+            .iter()
+            .context("failed to iterate wordbank entries")?;
         while let Some(item) = iter.next() {
             let entry: (
                 redb::AccessGuard<'_, &'static str>,
                 redb::AccessGuard<'_, &'static str>,
             ) = item.context("failed to read wordbank entry")?;
             let key = entry.0.value().to_string();
-            let values = load_ordered_values_read(&word_table, &homophone_table, &order_table, &key)?;
+            let values =
+                load_ordered_values_read(&word_table, &homophone_table, &order_table, &key)?;
             let matches_query = normalized_query.as_ref().is_none_or(|query| {
                 key.to_lowercase().contains(query)
-                    || values.iter().any(|value: &String| value.contains(query.as_str()))
+                    || values
+                        .iter()
+                        .any(|value: &String| value.contains(query.as_str()))
             });
 
             if matches_query {
@@ -469,14 +654,17 @@ impl WordbankLoader {
         })
     }
 
-    /// 新增一个中文词条到指定字库。
+    /// 新增一个中文词条到指定词库。
     fn add_entry(&mut self, wordbank_id: &str, value: &str) -> Result<WordbankEntry> {
         let wordbank_id = normalize_wordbank_id(wordbank_id)?;
         let value = normalize_word(value)?;
         let key = build_pinyin_key(&value)?;
         let table_names = self.table_names(&wordbank_id);
 
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         ensure_wordbank_exists_in_write(&write_txn, &wordbank_id)?;
         {
             let mut word_table = open_word_table_write(&write_txn, table_names.0)
@@ -485,7 +673,13 @@ impl WordbankLoader {
                 .with_context(|| format!("failed to open homophone table for '{wordbank_id}'"))?;
             let mut order_table = open_order_table_write(&write_txn, table_names.2)
                 .with_context(|| format!("failed to open order table for '{wordbank_id}'"))?;
-            insert_value(&mut word_table, &mut homophone_table, &mut order_table, &key, &value)?;
+            insert_value(
+                &mut word_table,
+                &mut homophone_table,
+                &mut order_table,
+                &key,
+                &value,
+            )?;
         }
         write_txn
             .commit()
@@ -495,7 +689,7 @@ impl WordbankLoader {
             .ok_or_else(|| anyhow!("wordbank entry disappeared after insertion"))
     }
 
-    /// 按空白字符拆分文本并批量新增中文词条到指定字库。
+    /// 按空白字符拆分文本并批量新增中文词条到指定词库。
     fn add_entries_from_text(
         &mut self,
         wordbank_id: &str,
@@ -505,7 +699,10 @@ impl WordbankLoader {
         let values = split_wordbank_text(text)?;
         let table_names = self.table_names(&wordbank_id);
 
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         ensure_wordbank_exists_in_write(&write_txn, &wordbank_id)?;
         {
             let mut word_table = open_word_table_write(&write_txn, table_names.0)
@@ -549,7 +746,10 @@ impl WordbankLoader {
         let new_key = build_pinyin_key(&new_value)?;
         let table_names = self.table_names(&wordbank_id);
 
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         ensure_wordbank_exists_in_write(&write_txn, &wordbank_id)?;
         {
             let mut word_table = open_word_table_write(&write_txn, table_names.0)
@@ -588,7 +788,10 @@ impl WordbankLoader {
         let key = build_pinyin_key(&value)?;
         let table_names = self.table_names(&wordbank_id);
 
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         ensure_wordbank_exists_in_write(&write_txn, &wordbank_id)?;
         {
             let mut word_table = open_word_table_write(&write_txn, table_names.0)
@@ -614,7 +817,10 @@ impl WordbankLoader {
 
     /// 读取单个拼音键对应的聚合条目。
     fn get_entry(&mut self, wordbank_id: &str, key: &str) -> Result<Option<WordbankEntry>> {
-        let read_txn = self.db.begin_read().context("failed to open wordbank read txn")?;
+        let read_txn = self
+            .db
+            .begin_read()
+            .context("failed to open wordbank read txn")?;
         ensure_wordbank_exists_in_read(&read_txn, wordbank_id)?;
         let table_names = self.table_names(wordbank_id);
         let word_table = open_word_table_read(&read_txn, table_names.0)
@@ -639,7 +845,10 @@ impl WordbankLoader {
     }
 
     fn count_entries(&mut self, wordbank_id: &str) -> Result<usize> {
-        let read_txn = self.db.begin_read().context("failed to open wordbank read txn")?;
+        let read_txn = self
+            .db
+            .begin_read()
+            .context("failed to open wordbank read txn")?;
         self.count_entries_for_bank(&read_txn, wordbank_id)
     }
 
@@ -664,7 +873,10 @@ impl WordbankLoader {
         let key = normalize_entry_key(key)?;
         let table_names = self.table_names(&wordbank_id);
 
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         ensure_wordbank_exists_in_write(&write_txn, &wordbank_id)?;
         {
             let mut word_table = open_word_table_write(&write_txn, table_names.0)
@@ -708,7 +920,10 @@ impl WordbankLoader {
         let reordered_values = normalize_entry_group_values(values)?;
         let table_names = self.table_names(&wordbank_id);
 
-        let write_txn = self.db.begin_write().context("failed to open wordbank write txn")?;
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("failed to open wordbank write txn")?;
         ensure_wordbank_exists_in_write(&write_txn, &wordbank_id)?;
         {
             let mut word_table = open_word_table_write(&write_txn, table_names.0)
@@ -749,7 +964,10 @@ impl WordbankLoader {
     }
 
     fn collect_enabled_words(&mut self) -> Result<Vec<String>> {
-        let read_txn = self.db.begin_read().context("failed to open wordbank read txn")?;
+        let read_txn = self
+            .db
+            .begin_read()
+            .context("failed to open wordbank read txn")?;
         let meta_table = read_txn
             .open_table(WORDBANK_META_TABLE)
             .context("failed to open wordbank metadata table")?;
@@ -784,7 +1002,9 @@ impl WordbankLoader {
                     redb::AccessGuard<'_, &'static str>,
                 ) = word_item.context("failed to read wordbank word entry")?;
                 let key = word_entry.0.value().to_string();
-                for value in load_ordered_values_read(&word_table, &homophone_table, &order_table, &key)? {
+                for value in
+                    load_ordered_values_read(&word_table, &homophone_table, &order_table, &key)?
+                {
                     if seen.insert(value.clone()) {
                         words.push(value);
                     }
@@ -793,6 +1013,140 @@ impl WordbankLoader {
         }
 
         Ok(words)
+    }
+
+    fn collect_enabled_entry_groups(&mut self) -> Result<Vec<WordbankEntry>> {
+        let read_txn = self
+            .db
+            .begin_read()
+            .context("failed to open wordbank read txn")?;
+        let meta_table = read_txn
+            .open_table(WORDBANK_META_TABLE)
+            .context("failed to open wordbank metadata table")?;
+
+        let mut metas = Vec::<(String, WordbankMetaRecord)>::new();
+        let mut iter = meta_table
+            .iter()
+            .context("failed to iterate wordbank metadata")?;
+        while let Some(item) = iter.next() {
+            let entry = item.context("failed to read wordbank metadata entry")?;
+            let wordbank_id = entry.0.value().to_string();
+            let record = decode_meta_record(entry.1.value())?;
+            if !record.is_enabled {
+                continue;
+            }
+            metas.push((wordbank_id, record));
+        }
+
+        metas.sort_by(|left, right| sort_wordbank_meta_entry(left, right));
+
+        let mut groups = Vec::<WordbankEntry>::new();
+        let mut group_index_by_key = HashMap::<String, usize>::new();
+        for (wordbank_id, _) in metas {
+            let table_names = self.table_names(&wordbank_id);
+            let word_table = open_word_table_read(&read_txn, table_names.0)
+                .with_context(|| format!("failed to open word table for '{wordbank_id}'"))?;
+            let homophone_table = open_homophone_table_read(&read_txn, table_names.1)
+                .with_context(|| format!("failed to open homophone table for '{wordbank_id}'"))?;
+            let order_table = open_order_table_read(&read_txn, table_names.2)
+                .with_context(|| format!("failed to open order table for '{wordbank_id}'"))?;
+
+            let mut word_iter = word_table
+                .iter()
+                .with_context(|| format!("failed to iterate word entries for '{wordbank_id}'"))?;
+            while let Some(word_item) = word_iter.next() {
+                let word_entry: (
+                    redb::AccessGuard<'_, &'static str>,
+                    redb::AccessGuard<'_, &'static str>,
+                ) = word_item.context("failed to read wordbank word entry")?;
+                let key = word_entry.0.value().to_string();
+                let values =
+                    load_ordered_values_read(&word_table, &homophone_table, &order_table, &key)?;
+
+                let group_index = if let Some(index) = group_index_by_key.get(&key) {
+                    *index
+                } else {
+                    let index = groups.len();
+                    groups.push(WordbankEntry {
+                        key: key.clone(),
+                        values: Vec::new(),
+                    });
+                    group_index_by_key.insert(key.clone(), index);
+                    index
+                };
+
+                let group = &mut groups[group_index];
+                for value in values {
+                    if !group.values.iter().any(|existing| existing == &value) {
+                        group.values.push(value);
+                    }
+                }
+            }
+        }
+
+        Ok(groups)
+    }
+
+    fn collect_enabled_fitter_entries(&mut self) -> Result<Vec<WordbankFitterEntry>> {
+        let read_txn = self
+            .db
+            .begin_read()
+            .context("failed to open wordbank read txn")?;
+        let meta_table = read_txn
+            .open_table(WORDBANK_META_TABLE)
+            .context("failed to open wordbank metadata table")?;
+
+        let mut metas = Vec::<(String, WordbankMetaRecord)>::new();
+        let mut iter = meta_table
+            .iter()
+            .context("failed to iterate wordbank metadata")?;
+        while let Some(item) = iter.next() {
+            let entry = item.context("failed to read wordbank metadata entry")?;
+            let wordbank_id = entry.0.value().to_string();
+            let record = decode_meta_record(entry.1.value())?;
+            if record.is_enabled {
+                metas.push((wordbank_id, record));
+            }
+        }
+
+        metas.sort_by(|left, right| sort_wordbank_meta_entry(left, right));
+
+        let mut entries = Vec::new();
+        for (wordbank_id, record) in metas {
+            let table_names = self.table_names(&wordbank_id);
+            let word_table = open_word_table_read(&read_txn, table_names.0)
+                .with_context(|| format!("failed to open word table for '{wordbank_id}'"))?;
+            let homophone_table = open_homophone_table_read(&read_txn, table_names.1)
+                .with_context(|| format!("failed to open homophone table for '{wordbank_id}'"))?;
+            let order_table = open_order_table_read(&read_txn, table_names.2)
+                .with_context(|| format!("failed to open order table for '{wordbank_id}'"))?;
+
+            let mut word_iter = word_table
+                .iter()
+                .with_context(|| format!("failed to iterate word entries for '{wordbank_id}'"))?;
+            while let Some(word_item) = word_iter.next() {
+                let word_entry: (
+                    redb::AccessGuard<'_, &'static str>,
+                    redb::AccessGuard<'_, &'static str>,
+                ) = word_item.context("failed to read wordbank word entry")?;
+                let key = word_entry.0.value().to_string();
+                let Some(value) =
+                    load_ordered_values_read(&word_table, &homophone_table, &order_table, &key)?
+                        .into_iter()
+                        .next()
+                else {
+                    continue;
+                };
+                entries.push(WordbankFitterEntry {
+                    key,
+                    value,
+                    prefix: record.prefix.clone(),
+                    suffix: record.suffix.clone(),
+                });
+            }
+        }
+
+        Ok(entries)
     }
 
     fn table_names(&mut self, wordbank_id: &str) -> (&'static str, &'static str, &'static str) {
@@ -808,58 +1162,316 @@ impl WordbankLoader {
             });
         *names
     }
+
+    fn next_non_default_sort_order(&mut self) -> Result<u64> {
+        let read_txn = self
+            .db
+            .begin_read()
+            .context("failed to open wordbank read txn")?;
+        let meta_table = read_txn
+            .open_table(WORDBANK_META_TABLE)
+            .context("failed to open wordbank metadata table")?;
+        let mut max_sort_order = 0u64;
+        let mut iter = meta_table
+            .iter()
+            .context("failed to iterate wordbank metadata")?;
+        while let Some(item) = iter.next() {
+            let entry = item.context("failed to read wordbank metadata entry")?;
+            let record = decode_meta_record(entry.1.value())?;
+            if !record.is_default {
+                max_sort_order = max_sort_order.max(record.sort_order);
+            }
+        }
+        Ok(max_sort_order + 1)
+    }
+
+    fn export_wordbanks(&mut self, wordbank_ids: Vec<String>) -> Result<String> {
+        let requested_ids = wordbank_ids
+            .into_iter()
+            .map(|id| normalize_wordbank_id(&id))
+            .collect::<Result<HashSet<_>>>()?;
+        ensure!(
+            !requested_ids.is_empty(),
+            "at least one wordbank must be selected for export"
+        );
+
+        let read_txn = self
+            .db
+            .begin_read()
+            .context("failed to open wordbank read txn")?;
+        let meta_table = read_txn
+            .open_table(WORDBANK_META_TABLE)
+            .context("failed to open wordbank metadata table")?;
+
+        let mut exported = Vec::<WordbankExportBank>::new();
+        let mut iter = meta_table
+            .iter()
+            .context("failed to iterate wordbank metadata")?;
+        while let Some(item) = iter.next() {
+            let entry = item.context("failed to read wordbank metadata entry")?;
+            let wordbank_id = entry.0.value().to_string();
+            if !requested_ids.contains(&wordbank_id) {
+                continue;
+            }
+
+            let record = decode_meta_record(entry.1.value())?;
+            let table_names = self.table_names(&wordbank_id);
+            let word_table = open_word_table_read(&read_txn, table_names.0)
+                .with_context(|| format!("failed to open word table for '{wordbank_id}'"))?;
+            let homophone_table = open_homophone_table_read(&read_txn, table_names.1)
+                .with_context(|| format!("failed to open homophone table for '{wordbank_id}'"))?;
+            let order_table = open_order_table_read(&read_txn, table_names.2)
+                .with_context(|| format!("failed to open order table for '{wordbank_id}'"))?;
+
+            let mut entries = Vec::<WordbankEntry>::new();
+            let mut word_iter = word_table
+                .iter()
+                .with_context(|| format!("failed to iterate word entries for '{wordbank_id}'"))?;
+            while let Some(word_item) = word_iter.next() {
+                let word_entry: (
+                    redb::AccessGuard<'_, &'static str>,
+                    redb::AccessGuard<'_, &'static str>,
+                ) = word_item.context("failed to read wordbank word entry")?;
+                let key = word_entry.0.value().to_string();
+                let values =
+                    load_ordered_values_read(&word_table, &homophone_table, &order_table, &key)?;
+                entries.push(WordbankEntry { key, values });
+            }
+            entries.sort_by(|left, right| left.key.cmp(&right.key));
+
+            exported.push(WordbankExportBank {
+                name: record.name,
+                description: record.description,
+                prefix: record.prefix,
+                suffix: record.suffix,
+                sort_order: record.sort_order,
+                is_default: record.is_default,
+                is_enabled: record.is_enabled,
+                entries,
+            });
+        }
+
+        ensure!(
+            exported.len() == requested_ids.len(),
+            "some selected wordbanks were not found for export"
+        );
+        exported.sort_by(|left, right| {
+            right
+                .is_default
+                .cmp(&left.is_default)
+                .then_with(|| left.sort_order.cmp(&right.sort_order))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+
+        let exported_at_unix_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+
+        serde_json::to_string_pretty(&WordbankExportPackage {
+            version: 1,
+            exported_at_unix_seconds,
+            wordbanks: exported,
+        })
+        .context("failed to encode exported wordbanks")
+    }
+
+    fn import_wordbanks(&mut self, payload: &str) -> Result<Vec<WordbankSummary>> {
+        let package: WordbankExportPackage =
+            serde_json::from_str(payload).context("failed to decode imported wordbanks")?;
+        ensure!(package.version == 1, "unsupported wordbank export version");
+        ensure!(
+            !package.wordbanks.is_empty(),
+            "import payload did not contain any wordbanks"
+        );
+
+        let mut imported_ids = Vec::<String>::new();
+        for bank in package.wordbanks {
+            let imported_id = if bank.is_default {
+                let wordbank_id = DEFAULT_WORDBANK_ID.to_string();
+                self.clear_wordbank(&wordbank_id)?;
+                let updated = self.update_wordbank(
+                    &wordbank_id,
+                    &bank.name,
+                    bank.description.as_deref(),
+                    bank.prefix.as_deref(),
+                    bank.suffix.as_deref(),
+                )?;
+                self.set_wordbank_enabled(&updated.id, true)?;
+                updated.id
+            } else {
+                let created = self.create_wordbank(
+                    &bank.name,
+                    bank.description.as_deref(),
+                    bank.prefix.as_deref(),
+                    bank.suffix.as_deref(),
+                )?;
+                self.set_wordbank_enabled(&created.id, bank.is_enabled)?;
+                created.id
+            };
+
+            for entry in bank.entries {
+                let normalized_values = normalize_entry_group_values(entry.values)?;
+                let imported_id_for_entry = imported_id.clone();
+                let table_names = self.table_names(&imported_id_for_entry);
+                let write_txn = self
+                    .db
+                    .begin_write()
+                    .context("failed to open wordbank write txn")?;
+                ensure_wordbank_exists_in_write(&write_txn, &imported_id_for_entry)?;
+                {
+                    let mut word_table = open_word_table_write(&write_txn, table_names.0)
+                        .with_context(|| {
+                            format!("failed to open word table for '{imported_id_for_entry}'")
+                        })?;
+                    let mut homophone_table = open_homophone_table_write(&write_txn, table_names.1)
+                        .with_context(|| {
+                            format!("failed to open homophone table for '{imported_id_for_entry}'")
+                        })?;
+                    let mut order_table = open_order_table_write(&write_txn, table_names.2)
+                        .with_context(|| {
+                            format!("failed to open order table for '{imported_id_for_entry}'")
+                        })?;
+                    for value in &normalized_values {
+                        let key = build_pinyin_key(value)?;
+                        insert_value(
+                            &mut word_table,
+                            &mut homophone_table,
+                            &mut order_table,
+                            &key,
+                            value,
+                        )?;
+                    }
+                    let imported_key = normalize_entry_key(&entry.key)?;
+                    let actual_values = load_ordered_values_write(
+                        &word_table,
+                        &homophone_table,
+                        &order_table,
+                        &imported_key,
+                    )?;
+                    ensure!(
+                        actual_values.iter().cloned().collect::<HashSet<_>>()
+                            == normalized_values.iter().cloned().collect::<HashSet<_>>(),
+                        "imported entry values did not match pinyin key '{}'",
+                        entry.key
+                    );
+                    homophone_table
+                        .remove_all(imported_key.as_str())
+                        .with_context(|| {
+                            format!("failed to reset homophones for '{}'", entry.key)
+                        })?;
+                    word_table
+                        .insert(imported_key.as_str(), normalized_values[0].as_str())
+                        .with_context(|| {
+                            format!("failed to restore primary value for '{}'", entry.key)
+                        })?;
+                    for value in normalized_values.iter().skip(1) {
+                        homophone_table
+                            .insert(imported_key.as_str(), value.as_str())
+                            .with_context(|| {
+                                format!("failed to restore ordered homophone value '{value}'")
+                            })?;
+                    }
+                    store_order_record(&mut order_table, &imported_key, &normalized_values)?;
+                }
+                write_txn
+                    .commit()
+                    .context("failed to commit imported wordbank entry")?;
+            }
+
+            imported_ids.push(imported_id);
+        }
+
+        let mut banks = self.list_wordbanks()?;
+        banks.retain(|bank| imported_ids.iter().any(|id| id == &bank.id));
+        Ok(banks)
+    }
 }
 
-/// 列出全部字库。
+/// 列出全部词库。
 #[tauri::command]
 pub async fn list_wordbanks(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<Vec<WordbankSummary>, String> {
     let state = Arc::clone(&wordbank_state.inner);
-    async_runtime::spawn_blocking(move || with_wordbank_loader(&app, &state, |loader| loader.list_wordbanks()))
-        .await
-        .map_err(|err| format!("Failed to join wordbank list task: {err}"))?
+    async_runtime::spawn_blocking(move || {
+        with_wordbank_loader(&app, &state, |loader| loader.list_wordbanks())
+    })
+    .await
+    .map_err(|err| format!("Failed to join wordbank list task: {err}"))?
 }
 
-/// 创建字库。
+/// 创建词库。
 #[tauri::command]
 pub async fn create_wordbank(
     name: String,
     description: Option<String>,
+    prefix: Option<String>,
+    suffix: Option<String>,
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<WordbankSummary, String> {
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
         with_wordbank_loader(&app, &state, |loader| {
-            loader.create_wordbank(&name, description.as_deref())
+            loader.create_wordbank(
+                &name,
+                description.as_deref(),
+                prefix.as_deref(),
+                suffix.as_deref(),
+            )
         })
     })
     .await
     .map_err(|err| format!("Failed to join wordbank create task: {err}"))?
 }
 
-/// 更新字库元信息。
+/// 更新词库元信息。
 #[tauri::command]
 pub async fn update_wordbank(
     wordbank_id: String,
     name: String,
     description: Option<String>,
+    prefix: Option<String>,
+    suffix: Option<String>,
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<WordbankSummary, String> {
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
         with_wordbank_loader(&app, &state, |loader| {
-            loader.update_wordbank(&wordbank_id, &name, description.as_deref())
+            loader.update_wordbank(
+                &wordbank_id,
+                &name,
+                description.as_deref(),
+                prefix.as_deref(),
+                suffix.as_deref(),
+            )
         })
     })
     .await
     .map_err(|err| format!("Failed to join wordbank update task: {err}"))?
 }
 
-/// 更新字库启用状态。
+/// 重排非默认词库优先级。
+#[tauri::command]
+pub async fn reorder_wordbanks(
+    wordbank_ids: Vec<String>,
+    app: AppHandle,
+    wordbank_state: State<'_, WordbankState>,
+) -> Result<Vec<WordbankSummary>, String> {
+    let state = Arc::clone(&wordbank_state.inner);
+    async_runtime::spawn_blocking(move || {
+        with_wordbank_loader(&app, &state, |loader| {
+            loader.reorder_wordbanks(wordbank_ids)
+        })
+    })
+    .await
+    .map_err(|err| format!("Failed to join wordbank reorder task: {err}"))?
+}
+
+/// 更新词库启用状态。
 #[tauri::command]
 pub async fn set_wordbank_enabled(
     wordbank_id: String,
@@ -879,7 +1491,7 @@ pub async fn set_wordbank_enabled(
     Ok(updated)
 }
 
-/// 删除字库。
+/// 删除词库。
 #[tauri::command]
 pub async fn delete_wordbank(
     wordbank_id: String,
@@ -894,7 +1506,7 @@ pub async fn delete_wordbank(
     .map_err(|err| format!("Failed to join wordbank delete task: {err}"))?
 }
 
-/// 清空字库内容。
+/// 清空词库内容。
 #[tauri::command]
 pub async fn clear_wordbank(
     wordbank_id: String,
@@ -909,7 +1521,7 @@ pub async fn clear_wordbank(
     .map_err(|err| format!("Failed to join wordbank clear task: {err}"))?
 }
 
-/// 查询指定字库的词条列表。
+/// 查询指定词库的词条列表。
 #[tauri::command]
 pub async fn list_wordbank_entries(
     wordbank_id: String,
@@ -937,7 +1549,9 @@ pub async fn add_wordbank_entry(
 ) -> Result<WordbankEntry, String> {
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| loader.add_entry(&wordbank_id, &value))
+        with_wordbank_loader(&app, &state, |loader| {
+            loader.add_entry(&wordbank_id, &value)
+        })
     })
     .await
     .map_err(|err| format!("Failed to join wordbank add task: {err}"))?
@@ -990,7 +1604,9 @@ pub async fn delete_wordbank_entry(
 ) -> Result<(), String> {
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| loader.delete_entry(&wordbank_id, &value))
+        with_wordbank_loader(&app, &state, |loader| {
+            loader.delete_entry(&wordbank_id, &value)
+        })
     })
     .await
     .map_err(|err| format!("Failed to join wordbank delete task: {err}"))?
@@ -1006,7 +1622,9 @@ pub async fn delete_wordbank_entry_group(
 ) -> Result<(), String> {
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| loader.delete_entry_group(&wordbank_id, &key))
+        with_wordbank_loader(&app, &state, |loader| {
+            loader.delete_entry_group(&wordbank_id, &key)
+        })
     })
     .await
     .map_err(|err| format!("Failed to join wordbank group delete task: {err}"))?
@@ -1031,7 +1649,84 @@ pub async fn reorder_wordbank_entry_group(
     .map_err(|err| format!("Failed to join wordbank group reorder task: {err}"))?
 }
 
-/// 通过删除词库文件重置全部字库。
+/// 导出选中的词库为 JSON。
+#[tauri::command]
+pub async fn export_wordbanks(
+    wordbank_ids: Vec<String>,
+    app: AppHandle,
+    wordbank_state: State<'_, WordbankState>,
+) -> Result<String, String> {
+    let state = Arc::clone(&wordbank_state.inner);
+    async_runtime::spawn_blocking(move || {
+        with_wordbank_loader(&app, &state, |loader| loader.export_wordbanks(wordbank_ids))
+    })
+    .await
+    .map_err(|err| format!("Failed to join wordbank export task: {err}"))?
+}
+
+/// 从 JSON 导入词库。
+#[tauri::command]
+pub async fn import_wordbanks(
+    payload: String,
+    app: AppHandle,
+    wordbank_state: State<'_, WordbankState>,
+) -> Result<Vec<WordbankSummary>, String> {
+    let state = Arc::clone(&wordbank_state.inner);
+    async_runtime::spawn_blocking(move || {
+        with_wordbank_loader(&app, &state, |loader| loader.import_wordbanks(&payload))
+    })
+    .await
+    .map_err(|err| format!("Failed to join wordbank import task: {err}"))?
+}
+
+/// 备份词库数据库文件。
+#[tauri::command]
+pub fn backup_wordbank_database(
+    app: AppHandle,
+    wordbank_state: State<'_, WordbankState>,
+) -> Result<WordbankBackupResult, String> {
+    {
+        let mut guard = wordbank_state
+            .inner
+            .lock()
+            .map_err(|_| "Failed to lock wordbank state".to_string())?;
+        *guard = None;
+    }
+
+    let source_path = resolve_wordbank_path(&app)
+        .map_err(|err| format!("failed to resolve wordbank path: {err:#}"))?;
+    if !source_path.exists() {
+        return Err("failed to backup wordbank: wordbank database file was not found".to_string());
+    }
+
+    let backup_dir = resolve_wordbank_backup_dir(&app)
+        .map_err(|err| format!("failed to resolve wordbank backup dir: {err:#}"))?;
+    fs::create_dir_all(&backup_dir).map_err(|err| {
+        format!(
+            "failed to create backup dir {}: {err}",
+            backup_dir.display()
+        )
+    })?;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let backup_path = backup_dir.join(format!("wordbank-{timestamp}.redb"));
+    fs::copy(&source_path, &backup_path).map_err(|err| {
+        format!(
+            "failed to copy wordbank database from {} to {}: {err}",
+            source_path.display(),
+            backup_path.display()
+        )
+    })?;
+
+    Ok(WordbankBackupResult {
+        backup_path: backup_path.to_string_lossy().into_owned(),
+    })
+}
+
+/// 通过删除词库文件重置全部词库。
 #[tauri::command]
 pub fn reset_wordbank_database(
     app: AppHandle,
@@ -1060,6 +1755,55 @@ pub(crate) fn collect_enabled_wordbank_words(
 ) -> Result<Vec<String>, String> {
     let state = Arc::clone(&wordbank_state.inner);
     with_wordbank_loader(app, &state, |loader| loader.collect_enabled_words())
+}
+
+pub(crate) fn collect_enabled_wordbank_fitter_entries(
+    app: &AppHandle,
+    wordbank_state: &WordbankState,
+) -> Result<Vec<WordbankFitterEntry>, String> {
+    let state = Arc::clone(&wordbank_state.inner);
+    with_wordbank_loader(app, &state, |loader| {
+        loader.collect_enabled_fitter_entries()
+    })
+}
+
+/// 查询一批分词结果在已启用词库中的同音候选项。
+#[tauri::command]
+pub async fn list_enabled_wordbank_homophones(
+    tokens: Vec<String>,
+    app: AppHandle,
+    wordbank_state: State<'_, WordbankState>,
+) -> Result<Vec<WordbankTokenHomophoneOptions>, String> {
+    let state = Arc::clone(&wordbank_state.inner);
+    async_runtime::spawn_blocking(move || {
+        with_wordbank_loader(&app, &state, |loader| {
+            let groups = loader.collect_enabled_entry_groups()?;
+            let group_map = groups
+                .into_iter()
+                .map(|group| (group.key, group.values))
+                .collect::<HashMap<_, _>>();
+
+            Ok(tokens
+                .into_iter()
+                .map(|token| {
+                    let mut options = build_pinyin_key(&token)
+                        .ok()
+                        .and_then(|key| group_map.get(&key).cloned())
+                        .unwrap_or_default();
+
+                    if options.len() <= 1 {
+                        options.clear();
+                    } else if !options.iter().any(|value| value == &token) {
+                        options.insert(0, token.clone());
+                    }
+
+                    WordbankTokenHomophoneOptions { token, options }
+                })
+                .collect::<Vec<_>>())
+        })
+    })
+    .await
+    .map_err(|err| format!("Failed to join enabled homophone query task: {err}"))?
 }
 
 /// 懒加载共享词库加载器，并在同一把锁下执行具体操作。
@@ -1095,6 +1839,14 @@ fn resolve_wordbank_path(app: &AppHandle) -> Result<PathBuf> {
     Ok(base.join(WORDBANK_FILENAME))
 }
 
+fn resolve_wordbank_backup_dir(app: &AppHandle) -> Result<PathBuf> {
+    let base = app
+        .path()
+        .app_local_data_dir()
+        .context("app_local_data_dir was not available")?;
+    Ok(base.join(WORDBANK_BACKUP_DIRNAME))
+}
+
 fn normalize_wordbank_id(value: &str) -> Result<String> {
     let value = value.trim();
     ensure!(!value.is_empty(), "wordbank id cannot be empty");
@@ -1112,6 +1864,43 @@ fn normalize_description(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn normalize_affix(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn sort_wordbank_meta_record(
+    left_id: &str,
+    left: &WordbankMetaRecord,
+    right_id: &str,
+    right: &WordbankMetaRecord,
+) -> std::cmp::Ordering {
+    right
+        .is_default
+        .cmp(&left.is_default)
+        .then_with(|| left.sort_order.cmp(&right.sort_order))
+        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left_id.cmp(right_id))
+}
+
+fn sort_wordbank_meta_entry(
+    left: &(String, WordbankMetaRecord),
+    right: &(String, WordbankMetaRecord),
+) -> std::cmp::Ordering {
+    sort_wordbank_meta_record(&left.0, &left.1, &right.0, &right.1)
+}
+
+fn sort_wordbank_summary(left: &WordbankSummary, right: &WordbankSummary) -> std::cmp::Ordering {
+    right
+        .is_default
+        .cmp(&left.is_default)
+        .then_with(|| left.sort_order.cmp(&right.sort_order))
+        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left.id.cmp(&right.id))
 }
 
 /// 将词条规范化为仅包含中文字符的字符串。
@@ -1137,7 +1926,10 @@ fn normalize_entry_group_values(values: Vec<String>) -> Result<Vec<String>> {
 
     for value in values {
         let value = normalize_word(&value)?;
-        ensure!(seen.insert(value.clone()), "reordered values cannot contain duplicates");
+        ensure!(
+            seen.insert(value.clone()),
+            "reordered values cannot contain duplicates"
+        );
         normalized.push(value);
     }
 
@@ -1169,7 +1961,10 @@ fn build_pinyin_key(value: &str) -> Result<String> {
             .ok_or_else(|| anyhow!("character '{ch}' did not have pinyin"))?;
         syllables.push(pinyin.plain().to_string());
     }
-    ensure!(!syllables.is_empty(), "word entry did not produce a pinyin key");
+    ensure!(
+        !syllables.is_empty(),
+        "word entry did not produce a pinyin key"
+    );
     Ok(syllables.join(" "))
 }
 
@@ -1250,17 +2045,15 @@ fn order_table_name(wordbank_id: &str) -> String {
     format!("wordbank__{wordbank_id}__order")
 }
 
-fn word_table_def(table_name: &str) -> TableDefinition<&str, &str> {
+fn word_table_def(table_name: &str) -> TableDefinition<'_, &str, &str> {
     TableDefinition::new(table_name)
 }
 
-fn homophone_table_def(
-    table_name: &str,
-) -> MultimapTableDefinition<&str, &str> {
+fn homophone_table_def(table_name: &str) -> MultimapTableDefinition<'_, &str, &str> {
     MultimapTableDefinition::new(table_name)
 }
 
-fn order_table_def(table_name: &str) -> TableDefinition<&str, &str> {
+fn order_table_def(table_name: &str) -> TableDefinition<'_, &str, &str> {
     TableDefinition::new(table_name)
 }
 
@@ -1337,7 +2130,7 @@ fn read_order_record<'a>(
     raw.map(|value: redb::AccessGuard<'_, &'static str>| {
         decode_entry_order_record(value.value()).map(|record| record.values)
     })
-        .transpose()
+    .transpose()
 }
 
 fn read_order_record_write(
@@ -1387,7 +2180,8 @@ fn load_all_values_read(
         .get(key)
         .with_context(|| format!("failed to read homophones for key '{key}'"))?;
     while let Some(value) = iter.next() {
-        let value: redb::AccessGuard<'_, &'static str> = value.context("failed to read homophone value")?;
+        let value: redb::AccessGuard<'_, &'static str> =
+            value.context("failed to read homophone value")?;
         let value = value.value().to_string();
         if seen.insert(value.clone()) {
             values.push(value);
@@ -1424,7 +2218,10 @@ fn load_all_values_write(
     Ok(values)
 }
 
-fn merge_values_with_order(all_values: Vec<String>, order_values: Option<Vec<String>>) -> Vec<String> {
+fn merge_values_with_order(
+    all_values: Vec<String>,
+    order_values: Option<Vec<String>>,
+) -> Vec<String> {
     let Some(order_values) = order_values else {
         return all_values;
     };
@@ -1478,7 +2275,8 @@ fn insert_value(
     key: &str,
     value: &str,
 ) -> Result<()> {
-    let mut values = load_ordered_values_write(word_table, homophone_table, order_table, key).unwrap_or_default();
+    let mut values = load_ordered_values_write(word_table, homophone_table, order_table, key)
+        .unwrap_or_default();
     if values.iter().any(|existing| existing == value) {
         return Ok(());
     }
@@ -1515,7 +2313,10 @@ fn remove_value(
     let mut values = load_ordered_values_write(word_table, homophone_table, order_table, key)?;
     let previous_len = values.len();
     values.retain(|existing| existing != value);
-    ensure!(values.len() != previous_len, "word entry '{value}' was not found");
+    ensure!(
+        values.len() != previous_len,
+        "word entry '{value}' was not found"
+    );
 
     if primary_value != value {
         let removed = homophone_table
@@ -1543,7 +2344,9 @@ fn remove_value(
             .with_context(|| format!("failed to clear homophones for key '{key}'"))?;
         word_table
             .insert(key, values[0].as_str())
-            .with_context(|| format!("failed to promote value '{}' under key '{key}'", values[0]))?;
+            .with_context(|| {
+                format!("failed to promote value '{}' under key '{key}'", values[0])
+            })?;
 
         for alternative in values.iter().skip(1) {
             homophone_table

@@ -59,7 +59,7 @@
     aria-label={m.tools_audio_asr_settings()}
     checked={activeTab === "settings"}
     on:change={() => setActiveTab("settings")} />
-  <div class="tab-content h-full w-full overflow-hidden border-base-300 bg-base-100 p-4 sm:p-6">
+  <div class="tab-content h-full w-full overflow-y-auto border-base-300 bg-base-100 p-4 sm:p-6">
     <AsrSettingsTab />
   </div>
 
