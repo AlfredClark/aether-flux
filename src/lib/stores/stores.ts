@@ -10,9 +10,37 @@ function initFromLocalStorage<T>(defaultValue: T, localStorageValue: string | nu
   const isPrimitive = defaultValue === null || typeof defaultValue !== "object";
 
   if (isPrimitive) {
-    if (localStorageValue !== null && localStorageValue !== undefined) {
+    if (localStorageValue === null || localStorageValue === undefined) {
+      return defaultValue;
+    }
+
+    if (defaultValue === null) {
+      return (localStorageValue === "null" ? null : defaultValue) as T;
+    }
+
+    if (typeof defaultValue === "boolean") {
+      if (localStorageValue === "true") return true as T;
+      if (localStorageValue === "false") return false as T;
+      return defaultValue;
+    }
+
+    if (typeof defaultValue === "number") {
+      const parsed = Number(localStorageValue);
+      return (Number.isNaN(parsed) ? defaultValue : parsed) as T;
+    }
+
+    if (typeof defaultValue === "bigint") {
+      try {
+        return BigInt(localStorageValue) as T;
+      } catch {
+        return defaultValue;
+      }
+    }
+
+    if (typeof defaultValue === "string") {
       return localStorageValue as T;
     }
+
     return defaultValue;
   }
 

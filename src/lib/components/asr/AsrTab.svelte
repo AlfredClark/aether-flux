@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { appCacheDir, join } from "@tauri-apps/api/path";
   import { readFile } from "@tauri-apps/plugin-fs";
   import { m } from "$lib/i18n/paraglide/messages";
+  import settings from "$lib/stores/settings";
 
   type InputDeviceInfo = {
     id: string;
@@ -47,6 +49,11 @@
     options: string[];
   };
 
+  type AsrHotkeyEventPayload = {
+    shortcut: string;
+    state: "pressed" | "released";
+  };
+
   const modelOptions: Array<{ value: AsrModelKind; label: string }> = [
     { value: "sense_voice_small", label: m.tools_audio_asr_model_sense_voice_small() },
     { value: "qwen3_asr", label: m.tools_audio_asr_model_qwen3_asr() }
@@ -83,6 +90,10 @@
   let resultTokens: ResultToken[] = $state([]);
   let resultEditorEnabled = $state(true);
   let error = $state("");
+  let hotkeyEnabled = $state(settings.asr_hotkey_enabled.get());
+  let hotkeyShortcut = $state(settings.asr_hotkey_shortcut.get());
+  let hotkeyTriggerMode = $state(settings.asr_hotkey_trigger_mode.get());
+  let recordingTriggeredByShortcut = $state(false);
 
   function modelLabel(model: AsrModelKind | null) {
     if (!model) return "";
@@ -127,6 +138,10 @@
     return resultTokens.length > 0 && !resultEditorEnabled;
   }
 
+  function shouldShowHotkeyHint() {
+    return hotkeyEnabled && hotkeyShortcut.trim().length > 0;
+  }
+
   $effect(() => {
     if (!supportsDecomposition(currentLanguageForDecomposition())) {
       enableFitting = false;
@@ -155,6 +170,8 @@
   }
 
   async function startRecording() {
+    if (recording || recognizing || loadingModel || !selectedId || !asrStatus.isLoaded) return;
+
     error = "";
     resetRecognitionResult();
 
@@ -176,6 +193,8 @@
   }
 
   async function stopRecording() {
+    if (!recording || recognizing) return;
+
     error = "";
     recognizing = true;
 
@@ -299,8 +318,41 @@
     }
   }
 
+  function handleShortcutPressed() {
+    if (!hotkeyEnabled || !hotkeyShortcut || !asrStatus.isLoaded) return;
+    if (recognizing || loadingModel) return;
+    if (hotkeyTriggerMode === "press_press") {
+      if (recording) {
+        void stopRecording();
+      } else {
+        void startRecording();
+      }
+      return;
+    }
+
+    recordingTriggeredByShortcut = true;
+    void startRecording();
+  }
+
+  function handleShortcutReleased() {
+    if (hotkeyTriggerMode !== "press_release") return;
+    if (!recordingTriggeredByShortcut || !hotkeyEnabled || !hotkeyShortcut) return;
+    recordingTriggeredByShortcut = false;
+    void stopRecording();
+  }
+
   onMount(() => {
     let disposed = false;
+    let unlistenHotkey: (() => void) | undefined;
+    const unsubscribeHotkeyEnabled = settings.asr_hotkey_enabled.subscribe((value) => {
+      hotkeyEnabled = value;
+    });
+    const unsubscribeHotkeyShortcut = settings.asr_hotkey_shortcut.subscribe((value) => {
+      hotkeyShortcut = value;
+    });
+    const unsubscribeHotkeyTriggerMode = settings.asr_hotkey_trigger_mode.subscribe((value) => {
+      hotkeyTriggerMode = value;
+    });
 
     void (async () => {
       try {
@@ -312,9 +364,27 @@
       }
     })();
 
+    void listen<AsrHotkeyEventPayload>("asr://hotkey", (event) => {
+      if (!hotkeyEnabled) return;
+
+      if (event.payload.state === "pressed") {
+        handleShortcutPressed();
+        return;
+      }
+
+      handleShortcutReleased();
+    }).then((cleanup) => {
+      unlistenHotkey = cleanup;
+    });
+
     return () => {
       disposed = true;
       if (audioUrl) URL.revokeObjectURL(audioUrl);
+      recordingTriggeredByShortcut = false;
+      unlistenHotkey?.();
+      unsubscribeHotkeyEnabled();
+      unsubscribeHotkeyShortcut();
+      unsubscribeHotkeyTriggerMode();
       void destroyAsrModel();
     };
   });
@@ -446,7 +516,7 @@
         {/if}
       </div>
 
-      <div class="flex gap-3">
+      <div class="flex flex-wrap items-center gap-3">
         {#if !recording}
           <button
             class="btn btn-primary"
@@ -462,6 +532,20 @@
 
         {#if recognizing}
           <span class="loading loading-md loading-spinner"></span>
+        {/if}
+
+        {#if shouldShowHotkeyHint()}
+          <div class="alert min-h-0 flex-1 py-2 alert-info">
+            <span class="text-sm">
+              {m.tools_audio_asr_hotkey_hint({
+                shortcut: hotkeyShortcut,
+                mode:
+                  hotkeyTriggerMode === "press_release"
+                    ? m.tools_audio_asr_hotkey_mode_press_release()
+                    : m.tools_audio_asr_hotkey_mode_press_press()
+              })}
+            </span>
+          </div>
         {/if}
       </div>
 

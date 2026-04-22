@@ -1,5 +1,10 @@
+mod app_shell;
 mod audio;
 
+use app_shell::{
+    build_recording_status_window, build_tray, configure_asr_hotkey, get_tray_mode_enabled, handle_window_event,
+    set_tray_mode_enabled, AppShellState,
+};
 use audio::asr::wordbank::{
     add_wordbank_entries_from_text, add_wordbank_entry, backup_wordbank_database, clear_wordbank,
     create_wordbank, delete_wordbank, delete_wordbank_entry, delete_wordbank_entry_group,
@@ -14,17 +19,30 @@ use audio::asr::{
 use audio::recorder::{
     get_recording_status, list_input_devices, start_recording, stop_recording, RecorderState,
 };
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 禁用DMA-BUF渲染，待优化
     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     tauri::Builder::default()
+        .plugin(tauri_plugin_positioner::init())
+        .setup(|app| {
+            build_tray(&app.handle())?;
+            build_recording_status_window(&app.handle())?;
+            Ok(())
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_system_fonts::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .on_window_event(|window, event| {
+            let state = window.state::<AppShellState>();
+            handle_window_event(window, event, state);
+        })
+        .manage(AppShellState::default())
         .manage(RecorderState::default())
         .manage(AsrState::default())
         .manage(WordbankState::default())
@@ -33,6 +51,9 @@ pub fn run() {
             get_recording_status,
             start_recording,
             stop_recording,
+            configure_asr_hotkey,
+            set_tray_mode_enabled,
+            get_tray_mode_enabled,
             get_asr_status,
             get_asr_recording_cache_stats,
             clear_asr_recording_cache,

@@ -3,13 +3,18 @@ mod encoding;
 mod stream;
 mod types;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 
 use cpal::{
     traits::{DeviceTrait, StreamTrait},
     SampleFormat,
 };
-use tauri::State;
+use tauri::{AppHandle, State};
+
+use crate::app_shell::{hide_recording_status_window, show_recording_status_window};
 
 use self::{
     device::{find_input_device_by_id, list_input_devices_impl, readable_device_name},
@@ -43,6 +48,7 @@ pub fn start_recording(
     device_id: String,
     output_path: String,
     sample_rate: Option<u32>,
+    app: AppHandle,
     recorder: State<'_, RecorderState>,
 ) -> Result<(), String> {
     let mut guard = recorder
@@ -92,14 +98,23 @@ pub fn start_recording(
         channels: config.channels,
         device_id,
         device_name,
+        started_at: SystemTime::now(),
     });
+
+    drop(guard);
+    show_recording_status_window(&app)
+        .map_err(|error| format!("Failed to show recording status window: {error}"))?;
 
     Ok(())
 }
 
 /// 停止当前录音任务，完成文件写入，并在需要时离线重采样输出 WAV。
 #[tauri::command]
-pub fn stop_recording(recorder: State<'_, RecorderState>) -> Result<StopRecordingResult, String> {
+pub fn stop_recording(
+    app: AppHandle,
+    recorder: State<'_, RecorderState>,
+) -> Result<StopRecordingResult, String> {
+    let _ = hide_recording_status_window(&app);
     let mut guard = recorder
         .inner
         .lock()
@@ -119,6 +134,7 @@ pub fn stop_recording(recorder: State<'_, RecorderState>) -> Result<StopRecordin
         channels,
         device_id,
         device_name,
+        ..
     } = active;
 
     let result = StopRecordingResult {

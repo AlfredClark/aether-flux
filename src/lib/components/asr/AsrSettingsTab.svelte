@@ -5,6 +5,8 @@
   import { writeTextFile } from "@tauri-apps/plugin-fs";
   import { m } from "$lib/i18n/paraglide/messages";
   import { openModal } from "$lib/stores/modal";
+  import settings from "$lib/stores/settings";
+  import { parseShortcutFromKeyboardEvent } from "$lib/utils/asrShortcut";
 
   type AsrRecordingCacheStats = {
     fileCount: number;
@@ -41,6 +43,11 @@
   let backingUpWordbank = false;
   let resettingWordbank = false;
   let importInputElement: HTMLInputElement | undefined;
+  let hotkeyEnabled = settings.asr_hotkey_enabled.get();
+  let hotkeyShortcut = settings.asr_hotkey_shortcut.get();
+  let hotkeyTriggerMode = settings.asr_hotkey_trigger_mode.get();
+  let capturingHotkey = false;
+  let hotkeyInputElement: HTMLInputElement | undefined;
 
   function formatBytes(bytes: number) {
     if (bytes <= 0) return "0 B";
@@ -77,6 +84,50 @@
       backdrop: true,
       confirmText: m.msg_confirm()
     });
+  }
+
+  function toggleHotkeyEnabled() {
+    hotkeyEnabled = !hotkeyEnabled;
+    settings.asr_hotkey_enabled.set(hotkeyEnabled);
+  }
+
+  function beginCaptureHotkey() {
+    capturingHotkey = true;
+    queueMicrotask(() => hotkeyInputElement?.focus());
+  }
+
+  function clearHotkeyShortcut() {
+    hotkeyShortcut = "";
+    capturingHotkey = false;
+    settings.asr_hotkey_shortcut.set("");
+  }
+
+  function setHotkeyTriggerMode(mode: "press_press" | "press_release") {
+    hotkeyTriggerMode = mode;
+    settings.asr_hotkey_trigger_mode.set(mode);
+  }
+
+  function handleHotkeyShortcutCapture(event: KeyboardEvent) {
+    if (!capturingHotkey) return;
+
+    event.preventDefault();
+
+    if (event.key === "Escape") {
+      capturingHotkey = false;
+      return;
+    }
+
+    if (event.key === "Backspace" || event.key === "Delete") {
+      clearHotkeyShortcut();
+      return;
+    }
+
+    const shortcut = parseShortcutFromKeyboardEvent(event);
+    if (!shortcut) return;
+
+    hotkeyShortcut = shortcut;
+    capturingHotkey = false;
+    settings.asr_hotkey_shortcut.set(shortcut);
   }
 
   function formatExportFilename() {
@@ -285,6 +336,81 @@
 
 <div class="mx-auto flex h-full min-h-0 w-full max-w-5xl flex-col pr-1 pb-10">
   <div class="flex flex-col gap-4 pb-15">
+    <div class="card border border-base-300 bg-base-100 shadow-md">
+      <div class="card-body gap-4">
+        <div class="text-base font-semibold">{m.tools_audio_asr_settings_hotkey_title()}</div>
+        <div class="text-sm text-base-content/60">
+          {m.tools_audio_asr_settings_hotkey_description()}
+        </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-base-300 bg-base-100 p-4">
+          <div class="space-y-1">
+            <div class="text-sm font-medium">{m.tools_audio_asr_settings_hotkey_enable_label()}</div>
+            <div class="text-xs text-base-content/60">
+              {m.tools_audio_asr_settings_hotkey_enable_hint()}
+            </div>
+          </div>
+          <button
+            class={`btn btn-sm ${hotkeyEnabled ? "btn-primary" : "btn-outline"}`}
+            type="button"
+            onclick={toggleHotkeyEnabled}>
+            {hotkeyEnabled ? m.msg_enabled() : m.msg_disabled()}
+          </button>
+        </div>
+
+        <div class="space-y-3 rounded-xl border border-base-300 bg-base-100 p-4">
+          <div class="text-sm font-medium">{m.tools_audio_asr_settings_hotkey_shortcut_label()}</div>
+          <div class="text-xs text-base-content/60">
+            {capturingHotkey
+              ? m.tools_audio_asr_settings_hotkey_shortcut_capture_hint()
+              : m.tools_audio_asr_settings_hotkey_shortcut_hint()}
+          </div>
+
+          <div class="flex flex-wrap items-center gap-3">
+            <input
+              bind:this={hotkeyInputElement}
+              class={`input-bordered input w-full flex-1 ${capturingHotkey ? "input-primary" : ""}`}
+              readonly
+              value={capturingHotkey ? m.tools_audio_asr_settings_hotkey_shortcut_capturing() : hotkeyShortcut}
+              placeholder={m.tools_audio_asr_settings_hotkey_shortcut_placeholder()}
+              onkeydown={handleHotkeyShortcutCapture} />
+
+            <button class="btn btn-primary" type="button" onclick={beginCaptureHotkey}>
+              {capturingHotkey
+                ? m.tools_audio_asr_settings_hotkey_shortcut_recording()
+                : m.tools_audio_asr_settings_hotkey_shortcut_record_action()}
+            </button>
+
+            <button class="btn btn-outline" type="button" onclick={clearHotkeyShortcut}>
+              {m.tools_audio_asr_settings_hotkey_shortcut_clear_action()}
+            </button>
+          </div>
+        </div>
+
+        <div class="space-y-3 rounded-xl border border-base-300 bg-base-100 p-4">
+          <div class="text-sm font-medium">{m.tools_audio_asr_settings_hotkey_trigger_mode_label()}</div>
+          <div class="text-xs text-base-content/60">
+            {m.tools_audio_asr_settings_hotkey_trigger_mode_hint()}
+          </div>
+
+          <div class="join w-full">
+            <button
+              class={`btn join-item flex-1 ${hotkeyTriggerMode === "press_release" ? "btn-primary" : "btn-outline"}`}
+              type="button"
+              onclick={() => setHotkeyTriggerMode("press_release")}>
+              {m.tools_audio_asr_settings_hotkey_trigger_mode_press_release()}
+            </button>
+            <button
+              class={`btn join-item flex-1 ${hotkeyTriggerMode === "press_press" ? "btn-primary" : "btn-outline"}`}
+              type="button"
+              onclick={() => setHotkeyTriggerMode("press_press")}>
+              {m.tools_audio_asr_settings_hotkey_trigger_mode_press_press()}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="card border border-base-300 bg-base-100 shadow-md">
       <div class="card-body gap-4">
         <div class="flex items-center justify-between gap-3">

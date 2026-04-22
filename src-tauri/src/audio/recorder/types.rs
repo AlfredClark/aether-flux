@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::{sync::Mutex, time::SystemTime};
 
 use cpal::Stream;
 use serde::Serialize;
@@ -24,6 +24,7 @@ pub(crate) struct ActiveRecording {
     pub(crate) channels: u16,
     pub(crate) device_id: String,
     pub(crate) device_name: String,
+    pub(crate) started_at: SystemTime,
 }
 
 #[derive(Serialize)]
@@ -41,6 +42,7 @@ pub struct RecordingStatus {
     pub channels: Option<u16>,
     pub device_id: Option<String>,
     pub device_name: Option<String>,
+    pub started_at_millis: Option<u64>,
 }
 
 impl RecordingStatus {
@@ -54,6 +56,11 @@ impl RecordingStatus {
                 channels: Some(active.channels),
                 device_id: Some(active.device_id.clone()),
                 device_name: Some(active.device_name.clone()),
+                started_at_millis: active
+                    .started_at
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .ok()
+                    .map(|duration| duration.as_millis() as u64),
             },
             None => Self {
                 is_recording: false,
@@ -62,6 +69,7 @@ impl RecordingStatus {
                 channels: None,
                 device_id: None,
                 device_name: None,
+                started_at_millis: None,
             },
         }
     }
