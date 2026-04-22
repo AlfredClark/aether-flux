@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import { m } from "$lib/i18n/paraglide/messages";
+  import { setLocale } from "$lib/i18n/paraglide/runtime";
   import FontSelector from "$lib/components/selectors/FontSelector.svelte";
   import ThemeSelector from "$lib/components/selectors/ThemeSelector.svelte";
   import LanguageSelector from "$lib/components/selectors/LanguageSelector.svelte";
@@ -22,6 +24,12 @@
       message: m.warn_restore(),
       cancelText: m.msg_cancel(),
       onConfirm: async () => {
+        try {
+          await invoke("reset_app_settings");
+        } catch (error) {
+          console.error("Failed to reset backend app settings", error);
+        }
+
         settings.theme.clear();
         settings.font_family.clear();
         settings.font_zoom.clear();
@@ -29,6 +37,7 @@
         settings.asr_hotkey_enabled.clear();
         settings.asr_hotkey_shortcut.clear();
         settings.asr_hotkey_trigger_mode.clear();
+        setLocale("zh", { reload: false });
         window.location.reload();
       }
     });
@@ -70,7 +79,7 @@
   </li>
 </ul>
 
-<ul class="list mt-10 rounded-box bg-base-100 shadow-md xl:w-xl 2xl:w-3xl">
+<ul class="list mt-10 mb-10 rounded-box bg-base-100 shadow-md xl:w-xl 2xl:w-3xl">
   <li class="list-row flex w-full items-center justify-center">
     <button class="btn w-1/2 btn-error" onclick={restoreSettings}>{m.settings_restore()}</button>
   </li>

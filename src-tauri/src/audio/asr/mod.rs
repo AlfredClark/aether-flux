@@ -23,6 +23,28 @@ use self::{
         collect_enabled_wordbank_fitter_entries, collect_enabled_wordbank_words, WordbankState,
     },
 };
+use crate::utils::backend_i18n::{localize_error, tr, tr_args};
+
+#[macro_export]
+macro_rules! asr_commands {
+    ($callback:ident [$($acc:path,)*] $($rest:ident)*) => {
+        $crate::wordbank_commands!(
+            $callback
+            [
+                $($acc,)*
+                $crate::audio::asr::get_asr_status,
+                $crate::audio::asr::get_asr_recording_cache_stats,
+                $crate::audio::asr::clear_asr_recording_cache,
+                $crate::audio::asr::rebuild_asr_fitter,
+                $crate::audio::asr::rebuild_asr_decomposer,
+                $crate::audio::asr::load_asr_model,
+                $crate::audio::asr::destroy_asr_model,
+                $crate::audio::asr::recognize_audio,
+            ]
+            $($rest)*
+        )
+    };
+}
 
 /// ASR 模型类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,11 +149,11 @@ pub struct AsrRecordingCacheStats {
 
 /// 查询当前 ASR 运行时的加载状态。
 #[tauri::command]
-pub fn get_asr_status(asr_state: State<'_, AsrState>) -> Result<AsrStatus, String> {
+pub fn get_asr_status(app: AppHandle, asr_state: State<'_, AsrState>) -> Result<AsrStatus, String> {
     let guard = asr_state
         .inner
         .lock()
-        .map_err(|_| "Failed to lock ASR state".to_string())?;
+        .map_err(|_| tr(&app, "backend.asr.lock_failed", "Failed to lock ASR state"))?;
     Ok(AsrStatus::from_inner(&guard))
 }
 
@@ -151,11 +173,18 @@ pub async fn load_asr_model(
         build_runtime(&app_for_runtime, model, mode, language)
     })
     .await
-    .map_err(|err| format!("Failed to join ASR loader task: {err}"))??;
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.asr.join_loader_task_failed",
+            "Failed to join ASR loader task: {err}",
+            &[("err", err.to_string())],
+        )
+    })??;
 
     let mut guard = state
         .lock()
-        .map_err(|_| "Failed to lock ASR state".to_string())?;
+        .map_err(|_| tr(&app, "backend.asr.lock_failed", "Failed to lock ASR state"))?;
     guard.current_model = Some(model);
     guard.current_mode = Some(mode);
     guard.current_language = Some(language);
@@ -167,17 +196,17 @@ pub async fn load_asr_model(
     let guard = asr_state
         .inner
         .lock()
-        .map_err(|_| "Failed to lock ASR state".to_string())?;
+        .map_err(|_| tr(&app, "backend.asr.lock_failed", "Failed to lock ASR state"))?;
     Ok(AsrStatus::from_inner(&guard))
 }
 
 /// 页面退出时主动销毁模型，避免 ONNX Session 长时间占用内存和显存。
 #[tauri::command]
-pub fn destroy_asr_model(asr_state: State<'_, AsrState>) -> Result<(), String> {
+pub fn destroy_asr_model(app: AppHandle, asr_state: State<'_, AsrState>) -> Result<(), String> {
     let mut guard = asr_state
         .inner
         .lock()
-        .map_err(|_| "Failed to lock ASR state".to_string())?;
+        .map_err(|_| tr(&app, "backend.asr.lock_failed", "Failed to lock ASR state"))?;
     guard.current_model = None;
     guard.current_mode = None;
     guard.current_language = None;
@@ -189,22 +218,31 @@ pub fn destroy_asr_model(asr_state: State<'_, AsrState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_asr_recording_cache_stats(app: AppHandle) -> Result<AsrRecordingCacheStats, String> {
-    let cache_dir = resolve_recorder_cache_dir(&app)
-        .map_err(|err| format!("failed to resolve recorder cache dir: {err:#}"))?;
+    let cache_dir = resolve_recorder_cache_dir(&app).map_err(|err| {
+        localize_error(
+            &app,
+            &format!("failed to resolve recorder cache dir: {err:#}"),
+        )
+    })?;
 
     collect_wav_cache_stats(&cache_dir)
-        .map_err(|err| format!("failed to collect cache stats: {err:#}"))
+        .map_err(|err| localize_error(&app, &format!("failed to collect cache stats: {err:#}")))
 }
 
 #[tauri::command]
 pub fn clear_asr_recording_cache(app: AppHandle) -> Result<AsrRecordingCacheStats, String> {
-    let cache_dir = resolve_recorder_cache_dir(&app)
-        .map_err(|err| format!("failed to resolve recorder cache dir: {err:#}"))?;
+    let cache_dir = resolve_recorder_cache_dir(&app).map_err(|err| {
+        localize_error(
+            &app,
+            &format!("failed to resolve recorder cache dir: {err:#}"),
+        )
+    })?;
 
-    clear_wav_cache_files(&cache_dir)
-        .map_err(|err| format!("failed to clear recording cache: {err:#}"))?;
+    clear_wav_cache_files(&cache_dir).map_err(|err| {
+        localize_error(&app, &format!("failed to clear recording cache: {err:#}"))
+    })?;
     collect_wav_cache_stats(&cache_dir)
-        .map_err(|err| format!("failed to collect cache stats: {err:#}"))
+        .map_err(|err| localize_error(&app, &format!("failed to collect cache stats: {err:#}")))
 }
 
 #[tauri::command]
@@ -231,10 +269,11 @@ pub async fn recognize_audio(
     wav_path: String,
     enable_fitting: bool,
     enable_decomposition: bool,
+    app: AppHandle,
     asr_state: State<'_, AsrState>,
 ) -> Result<AsrRecognitionResult, String> {
     let state = Arc::clone(&asr_state.inner);
-    async_runtime::spawn_blocking(move || {
+    let result: Result<AsrRecognitionResult, String> = async_runtime::spawn_blocking(move || {
         let wav_path = PathBuf::from(wav_path);
         let mut guard = state
             .lock()
@@ -262,7 +301,15 @@ pub async fn recognize_audio(
         })
     })
     .await
-    .map_err(|err| format!("Failed to join ASR recognition task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.asr.join_recognition_task_failed",
+            "Failed to join ASR recognition task: {err}",
+            &[("err", err.to_string())],
+        )
+    })?;
+    result.map_err(|err| localize_error(&app, &err))
 }
 
 /// 在启用词库拟合且语言允许的前提下，对识别文本执行拼音词库拟合。
@@ -319,17 +366,21 @@ pub(crate) fn reinitialize_asr_decomposer(
     let mut guard = asr_state
         .inner
         .lock()
-        .map_err(|_| "Failed to lock ASR state".to_string())?;
+        .map_err(|_| tr(app, "backend.asr.lock_failed", "Failed to lock ASR state"))?;
     if guard.runtime.is_none() {
         guard.decomposer = None;
-        return Err("ASR model is not loaded".to_string());
+        return Err(tr(
+            app,
+            "backend.asr.model_not_loaded",
+            "ASR model is not loaded",
+        ));
     }
     drop(guard);
     let enabled_words = collect_enabled_wordbank_words(app, wordbank_state)?;
     let mut guard = asr_state
         .inner
         .lock()
-        .map_err(|_| "Failed to lock ASR state".to_string())?;
+        .map_err(|_| tr(app, "backend.asr.lock_failed", "Failed to lock ASR state"))?;
     guard.decomposer = Some(JiebaDecomposer::new(enabled_words));
     Ok(())
 }
@@ -342,10 +393,14 @@ pub(crate) fn reinitialize_asr_fitter(
     let mut guard = asr_state
         .inner
         .lock()
-        .map_err(|_| "Failed to lock ASR state".to_string())?;
+        .map_err(|_| tr(app, "backend.asr.lock_failed", "Failed to lock ASR state"))?;
     if guard.runtime.is_none() {
         guard.fitter = None;
-        return Err("ASR model is not loaded".to_string());
+        return Err(tr(
+            app,
+            "backend.asr.model_not_loaded",
+            "ASR model is not loaded",
+        ));
     }
     drop(guard);
 
@@ -363,7 +418,7 @@ pub(crate) fn reinitialize_asr_fitter(
     let mut guard = asr_state
         .inner
         .lock()
-        .map_err(|_| "Failed to lock ASR state".to_string())?;
+        .map_err(|_| tr(app, "backend.asr.lock_failed", "Failed to lock ASR state"))?;
     guard.fitter = Some(WordbankFitter::new(preferred_words));
     Ok(())
 }
@@ -383,8 +438,9 @@ fn build_runtime(
             let mut config = Qwen3AsrLoaderConfig::from_root(root, "model_0.6B");
             config.runtime.execution_mode = map_execution_mode(mode);
             config.language = Some(map_qwen3_language(language).to_string());
-            let loader = Qwen3AsrLoader::new(config)
-                .map_err(|err| format!("failed to load Qwen3-ASR: {err:#}"))?;
+            let loader = Qwen3AsrLoader::new(config).map_err(|err| {
+                localize_error(app, &format!("failed to load Qwen3-ASR: {err:#}"))
+            })?;
             Ok(Box::new(loader))
         }
         AsrModelKind::SenseVoiceSmall => {
@@ -396,8 +452,9 @@ fn build_runtime(
             let mut config = SenseVoiceSmallLoaderConfig::from_root(root);
             config.runtime.execution_mode = map_execution_mode(mode);
             config.language_token = map_sensevoice_language(language).to_string();
-            let loader = SenseVoiceSmallLoader::new(config)
-                .map_err(|err| format!("failed to load SenseVoiceSmall: {err:#}"))?;
+            let loader = SenseVoiceSmallLoader::new(config).map_err(|err| {
+                localize_error(app, &format!("failed to load SenseVoiceSmall: {err:#}"))
+            })?;
             Ok(Box::new(loader))
         }
     }

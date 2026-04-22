@@ -1,21 +1,16 @@
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{
-    menu::MenuBuilder, AppHandle, Emitter, Manager, Runtime, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, Window, WindowEvent,
-};
+use tauri::{menu::MenuBuilder, AppHandle, Emitter, Manager, Runtime, State, Window, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-use tauri_plugin_positioner::{Position, WindowExt};
+
+use crate::utils::backend_i18n::{tr, tr_args};
 
 const ASR_HOTKEY_EVENT: &str = "asr://hotkey";
 const MAIN_WINDOW_LABEL: &str = "main";
-const RECORDING_STATUS_WINDOW_LABEL: &str = "recording-status";
 const TRAY_ID: &str = "main-tray";
 const TRAY_MENU_SHOW_ID: &str = "tray-show-main-window";
 const TRAY_MENU_QUIT_ID: &str = "tray-quit-app";
-const RECORDING_STATUS_WIDTH: f64 = 160.0;
-const RECORDING_STATUS_HEIGHT: f64 = 40.0;
 
 #[derive(Default)]
 pub struct AppShellState {
@@ -32,7 +27,6 @@ struct AsrHotkeyPayload {
 }
 
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    hide_recording_status_window(app)?;
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.unminimize();
         window.show()?;
@@ -41,72 +35,30 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
-fn position_recording_status_window<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
-    if window.current_monitor()?.is_some() {
-        window.move_window(Position::BottomCenter)?;
-    }
-
-    Ok(())
+fn translate_or_default<R: Runtime>(app: &AppHandle<R>, key: &str, fallback: &str) -> String {
+    tr(app, key, fallback)
 }
 
-fn get_recording_status_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
-    if let Some(window) = app.get_webview_window(RECORDING_STATUS_WINDOW_LABEL) {
-        return Ok(window);
-    }
-
-    let mut builder = WebviewWindowBuilder::new(
-        app,
-        RECORDING_STATUS_WINDOW_LABEL,
-        WebviewUrl::App("recording-status".into()),
-    )
-    .title("Recording Status")
-    .visible(false)
-    .focused(false)
-    .resizable(false)
-    .maximizable(false)
-    .minimizable(false)
-    .skip_taskbar(true)
-    .always_on_top(true)
-    .decorations(false)
-    .transparent(true)
-    .inner_size(RECORDING_STATUS_WIDTH, RECORDING_STATUS_HEIGHT);
-
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon)?;
-    }
-
-    builder.build()
-}
-
-pub fn build_recording_status_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let _ = get_recording_status_window(app)?;
-    Ok(())
-}
-
-pub fn show_recording_status_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let window = get_recording_status_window(app)?;
-    window.show()?;
-    position_recording_status_window(&window)?;
-    Ok(())
-}
-
-pub fn hide_recording_status_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window(RECORDING_STATUS_WINDOW_LABEL) {
-        window.hide()?;
-    }
-    Ok(())
+fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    MenuBuilder::new(app)
+        .text(
+            TRAY_MENU_SHOW_ID,
+            translate_or_default(app, "tray.show_main_window", "Show Main Window"),
+        )
+        .separator()
+        .text(
+            TRAY_MENU_QUIT_ID,
+            translate_or_default(app, "tray.quit_app", "Quit Application"),
+        )
+        .build()
 }
 
 pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let menu = MenuBuilder::new(app)
-        .text(TRAY_MENU_SHOW_ID, "显示主窗口")
-        .separator()
-        .text(TRAY_MENU_QUIT_ID, "退出应用")
-        .build()?;
+    let menu = build_tray_menu(app)?;
 
     let mut tray = tauri::tray::TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .tooltip("Aether Flux")
+        .tooltip(translate_or_default(app, "tray.tooltip", "Aether Flux"))
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             TRAY_MENU_SHOW_ID => {
@@ -144,6 +96,20 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+pub fn refresh_tray_locale<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return Ok(());
+    };
+
+    tray.set_menu(Some(build_tray_menu(app)?))?;
+    tray.set_tooltip(Some(translate_or_default(
+        app,
+        "tray.tooltip",
+        "Aether Flux",
+    )))?;
+    Ok(())
+}
+
 pub fn handle_window_event<R: Runtime>(
     window: &Window<R>,
     event: &WindowEvent,
@@ -158,7 +124,6 @@ pub fn handle_window_event<R: Runtime>(
         let quit_requested = *state.quit_requested.lock().unwrap();
         if tray_mode_enabled && !quit_requested {
             api.prevent_close();
-            let _ = hide_recording_status_window(&window.app_handle());
             let _ = window.hide();
         }
     }
@@ -179,7 +144,14 @@ pub fn configure_asr_hotkey<R: Runtime>(
         if let Some(current_shortcut) = registered_shortcut.take() {
             global_shortcut
                 .unregister(current_shortcut.as_str())
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    tr_args(
+                        &app,
+                        "backend.tray.unregister_hotkey_failed",
+                        "Failed to unregister ASR hotkey: {err}",
+                        &[("err", error.to_string())],
+                    )
+                })?;
         }
         return Ok(());
     }
@@ -191,7 +163,14 @@ pub fn configure_asr_hotkey<R: Runtime>(
     if let Some(current_shortcut) = registered_shortcut.take() {
         global_shortcut
             .unregister(current_shortcut.as_str())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                tr_args(
+                    &app,
+                    "backend.tray.unregister_hotkey_failed",
+                    "Failed to unregister ASR hotkey: {err}",
+                    &[("err", error.to_string())],
+                )
+            })?;
     }
 
     global_shortcut
@@ -205,7 +184,14 @@ pub fn configure_asr_hotkey<R: Runtime>(
             };
             let _ = app.emit(ASR_HOTKEY_EVENT, payload);
         })
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            tr_args(
+                &app,
+                "backend.tray.register_hotkey_failed",
+                "Failed to register ASR hotkey: {err}",
+                &[("err", error.to_string())],
+            )
+        })?;
 
     *registered_shortcut = Some(normalized_shortcut);
     Ok(())

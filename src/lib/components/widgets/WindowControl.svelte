@@ -5,6 +5,7 @@
   import MinimizeIcon from "$lib/icons/window/MinimizeIcon.svelte";
   import MaximizeIcon from "$lib/icons/window/MaximizeIcon.svelte";
   import { openModal } from "$lib/stores/modal";
+  import settings from "$lib/stores/settings";
   import AlwaysOnTop from "$lib/icons/window/AlwaysOnTop.svelte";
   import { onMount } from "svelte";
 
@@ -24,6 +25,11 @@
   }
 
   async function closeWindow() {
+    if (settings.tray_mode_enabled.get()) {
+      await getCurrentWindow().close();
+      return;
+    }
+
     openModal({
       title: m.msg_warning(),
       backdrop: true,

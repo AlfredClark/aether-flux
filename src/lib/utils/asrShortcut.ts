@@ -31,36 +31,6 @@ export function parseShortcutFromKeyboardEvent(event: KeyboardEvent) {
   return [...modifiers, normalizedKey].join("+");
 }
 
-export function matchesShortcutEvent(event: KeyboardEvent, shortcut: string) {
-  const parts = shortcut
-    .split("+")
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-  if (parts.length === 0) {
-    return false;
-  }
-
-  const mainKey = parts[parts.length - 1];
-  const modifiers = new Set(parts.slice(0, -1));
-
-  const expectsCommandOrControl = modifiers.has("CommandOrControl");
-  const expectsAlt = modifiers.has("Alt");
-  const expectsShift = modifiers.has("Shift");
-
-  if (expectsCommandOrControl !== (event.ctrlKey || event.metaKey)) {
-    return false;
-  }
-  if (expectsAlt !== event.altKey) {
-    return false;
-  }
-  if (expectsShift !== event.shiftKey) {
-    return false;
-  }
-
-  return normalizeShortcutKey(event.key) === mainKey;
-}
-
 function normalizeShortcutKey(key: string) {
   if (key === " ") return "Space";
   if (key === "ArrowUp") return "Up";

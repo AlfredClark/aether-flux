@@ -10,16 +10,49 @@ use anyhow::{anyhow, ensure, Context, Result};
 use pinyin::ToPinyin;
 use redb::{
     Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
-    ReadableTableMetadata, TableDefinition,
+    ReadableTableMetadata, TableDefinition, WriteTransaction,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime, AppHandle, Manager, State};
+
+use crate::utils::backend_i18n::{localize_error, tr, tr_args};
 
 const WORDBANK_FILENAME: &str = "wordbank.redb";
 const WORDBANK_BACKUP_DIRNAME: &str = "backups";
 const WORDBANK_META_TABLE: TableDefinition<&str, &str> = TableDefinition::new("wordbank_meta");
 const DEFAULT_WORDBANK_ID: &str = "default";
 const DEFAULT_WORDBANK_NAME: &str = "Default";
+
+#[macro_export]
+macro_rules! wordbank_commands {
+    ($callback:ident [$($acc:path,)*] $($rest:ident)*) => {
+        $callback!(
+            [
+                $($acc,)*
+                $crate::audio::asr::wordbank::list_wordbanks,
+                $crate::audio::asr::wordbank::create_wordbank,
+                $crate::audio::asr::wordbank::update_wordbank,
+                $crate::audio::asr::wordbank::export_wordbanks,
+                $crate::audio::asr::wordbank::import_wordbanks,
+                $crate::audio::asr::wordbank::backup_wordbank_database,
+                $crate::audio::asr::wordbank::reorder_wordbanks,
+                $crate::audio::asr::wordbank::set_wordbank_enabled,
+                $crate::audio::asr::wordbank::delete_wordbank,
+                $crate::audio::asr::wordbank::clear_wordbank,
+                $crate::audio::asr::wordbank::list_wordbank_entries,
+                $crate::audio::asr::wordbank::list_enabled_wordbank_homophones,
+                $crate::audio::asr::wordbank::add_wordbank_entry,
+                $crate::audio::asr::wordbank::add_wordbank_entries_from_text,
+                $crate::audio::asr::wordbank::update_wordbank_entry,
+                $crate::audio::asr::wordbank::delete_wordbank_entry,
+                $crate::audio::asr::wordbank::delete_wordbank_entry_group,
+                $crate::audio::asr::wordbank::reorder_wordbank_entry_group,
+                $crate::audio::asr::wordbank::reset_wordbank_database,
+            ]
+            $($rest)*
+        )
+    };
+}
 
 /// 词库运行时状态，内部持有一个惰性初始化的 redb 加载器。
 #[derive(Default)]
@@ -297,26 +330,14 @@ impl WordbankLoader {
             .begin_write()
             .context("failed to open wordbank write txn")?;
         let record = {
-            let mut record = {
-                let meta_table = write_txn
-                    .open_table(WORDBANK_META_TABLE)
-                    .context("failed to open wordbank metadata table")?;
-                let existing = meta_table
-                    .get(wordbank_id.as_str())
-                    .with_context(|| format!("failed to query wordbank '{wordbank_id}'"))?
-                    .ok_or_else(|| anyhow!("wordbank '{wordbank_id}' was not found"))?;
-                decode_meta_record(existing.value())?
-            };
+            let mut record = load_wordbank_meta_record_for_update(&write_txn, &wordbank_id)?;
             record.name = updated_name;
             record.description = updated_description;
             record.prefix = updated_prefix;
             record.suffix = updated_suffix;
-            let mut meta_table = write_txn
-                .open_table(WORDBANK_META_TABLE)
-                .context("failed to reopen wordbank metadata table")?;
-            meta_table
-                .insert(wordbank_id.as_str(), encode_meta_record(&record)?.as_str())
-                .with_context(|| format!("failed to update wordbank '{wordbank_id}'"))?;
+            store_wordbank_meta_record(&write_txn, &wordbank_id, &record, || {
+                format!("failed to update wordbank '{wordbank_id}'")
+            })?;
             record
         };
         write_txn
@@ -324,17 +345,7 @@ impl WordbankLoader {
             .context("failed to commit wordbank update")?;
 
         let entry_total = self.count_entries(&wordbank_id)?;
-        Ok(WordbankSummary {
-            id: wordbank_id,
-            name: record.name,
-            description: record.description,
-            prefix: record.prefix,
-            suffix: record.suffix,
-            sort_order: record.sort_order,
-            is_default: record.is_default,
-            is_enabled: record.is_enabled,
-            entry_total,
-        })
+        Ok(build_wordbank_summary(wordbank_id, record, entry_total))
     }
 
     fn set_wordbank_enabled(
@@ -349,28 +360,14 @@ impl WordbankLoader {
             .begin_write()
             .context("failed to open wordbank write txn")?;
         let record = {
-            let mut record = {
-                let meta_table = write_txn
-                    .open_table(WORDBANK_META_TABLE)
-                    .context("failed to open wordbank metadata table")?;
-                let existing = meta_table
-                    .get(wordbank_id.as_str())
-                    .with_context(|| format!("failed to query wordbank '{wordbank_id}'"))?
-                    .ok_or_else(|| anyhow!("wordbank '{wordbank_id}' was not found"))?;
-                decode_meta_record(existing.value())?
-            };
+            let mut record = load_wordbank_meta_record_for_update(&write_txn, &wordbank_id)?;
             if record.is_default {
                 ensure!(enabled, "default wordbank cannot be disabled");
             }
             record.is_enabled = enabled;
-            let mut meta_table = write_txn
-                .open_table(WORDBANK_META_TABLE)
-                .context("failed to reopen wordbank metadata table")?;
-            meta_table
-                .insert(wordbank_id.as_str(), encode_meta_record(&record)?.as_str())
-                .with_context(|| {
-                    format!("failed to update wordbank enabled state for '{wordbank_id}'")
-                })?;
+            store_wordbank_meta_record(&write_txn, &wordbank_id, &record, || {
+                format!("failed to update wordbank enabled state for '{wordbank_id}'")
+            })?;
             record
         };
         write_txn
@@ -378,17 +375,7 @@ impl WordbankLoader {
             .context("failed to commit wordbank enabled state update")?;
 
         let entry_total = self.count_entries(&wordbank_id)?;
-        Ok(WordbankSummary {
-            id: wordbank_id,
-            name: record.name,
-            description: record.description,
-            prefix: record.prefix,
-            suffix: record.suffix,
-            sort_order: record.sort_order,
-            is_default: record.is_default,
-            is_enabled: record.is_enabled,
-            entry_total,
-        })
+        Ok(build_wordbank_summary(wordbank_id, record, entry_total))
     }
 
     fn reorder_wordbanks(&mut self, wordbank_ids: Vec<String>) -> Result<Vec<WordbankSummary>> {
@@ -1255,13 +1242,7 @@ impl WordbankLoader {
             exported.len() == requested_ids.len(),
             "some selected wordbanks were not found for export"
         );
-        exported.sort_by(|left, right| {
-            right
-                .is_default
-                .cmp(&left.is_default)
-                .then_with(|| left.sort_order.cmp(&right.sort_order))
-                .then_with(|| left.name.cmp(&right.name))
-        });
+        exported.sort_by(sort_wordbank_export_bank);
 
         let exported_at_unix_seconds = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1394,12 +1375,21 @@ pub async fn list_wordbanks(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<Vec<WordbankSummary>, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| loader.list_wordbanks())
+        with_wordbank_loader(&app_for_task, &state, |loader| loader.list_wordbanks())
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank list task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "list".to_string()), ("err", err.to_string())],
+        )
+    })?
+    .map(|wordbanks| localize_default_wordbank_summaries(&app, wordbanks))
 }
 
 /// 创建词库。
@@ -1412,9 +1402,10 @@ pub async fn create_wordbank(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<WordbankSummary, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             loader.create_wordbank(
                 &name,
                 description.as_deref(),
@@ -1424,7 +1415,15 @@ pub async fn create_wordbank(
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank create task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "create".to_string()), ("err", err.to_string())],
+        )
+    })?
+    .map(|summary| localize_default_wordbank_summary(&app, summary))
 }
 
 /// 更新词库元信息。
@@ -1438,9 +1437,10 @@ pub async fn update_wordbank(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<WordbankSummary, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             loader.update_wordbank(
                 &wordbank_id,
                 &name,
@@ -1451,7 +1451,15 @@ pub async fn update_wordbank(
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank update task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "update".to_string()), ("err", err.to_string())],
+        )
+    })?
+    .map(|summary| localize_default_wordbank_summary(&app, summary))
 }
 
 /// 重排非默认词库优先级。
@@ -1461,14 +1469,23 @@ pub async fn reorder_wordbanks(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<Vec<WordbankSummary>, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             loader.reorder_wordbanks(wordbank_ids)
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank reorder task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "reorder".to_string()), ("err", err.to_string())],
+        )
+    })?
+    .map(|wordbanks| localize_default_wordbank_summaries(&app, wordbanks))
 }
 
 /// 更新词库启用状态。
@@ -1487,8 +1504,18 @@ pub async fn set_wordbank_enabled(
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank enabled state task: {err}"))??;
-    Ok(updated)
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[
+                ("task", "enabled state".to_string()),
+                ("err", err.to_string()),
+            ],
+        )
+    })??;
+    Ok(localize_default_wordbank_summary(&app, updated))
 }
 
 /// 删除词库。
@@ -1498,12 +1525,22 @@ pub async fn delete_wordbank(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<(), String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| loader.delete_wordbank(&wordbank_id))
+        with_wordbank_loader(&app_for_task, &state, |loader| {
+            loader.delete_wordbank(&wordbank_id)
+        })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank delete task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "delete".to_string()), ("err", err.to_string())],
+        )
+    })?
 }
 
 /// 清空词库内容。
@@ -1513,12 +1550,22 @@ pub async fn clear_wordbank(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<(), String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| loader.clear_wordbank(&wordbank_id))
+        with_wordbank_loader(&app_for_task, &state, |loader| {
+            loader.clear_wordbank(&wordbank_id)
+        })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank clear task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "clear".to_string()), ("err", err.to_string())],
+        )
+    })?
 }
 
 /// 查询指定词库的词条列表。
@@ -1529,14 +1576,22 @@ pub async fn list_wordbank_entries(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<WordbankListResult, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             loader.list_entries(&wordbank_id, query.as_deref())
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank entry list task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "entry list".to_string()), ("err", err.to_string())],
+        )
+    })?
 }
 
 /// 添加词条。
@@ -1547,14 +1602,22 @@ pub async fn add_wordbank_entry(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<WordbankEntry, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             loader.add_entry(&wordbank_id, &value)
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank add task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "add".to_string()), ("err", err.to_string())],
+        )
+    })?
 }
 
 /// 按空白分隔文本批量添加词条。
@@ -1565,14 +1628,22 @@ pub async fn add_wordbank_entries_from_text(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<WordbankBatchResult, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             loader.add_entries_from_text(&wordbank_id, &text)
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank batch add task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "batch add".to_string()), ("err", err.to_string())],
+        )
+    })?
 }
 
 /// 更新词条。
@@ -1584,14 +1655,22 @@ pub async fn update_wordbank_entry(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<WordbankEntry, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             loader.update_entry(&wordbank_id, &original_value, &new_value)
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank update task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "update".to_string()), ("err", err.to_string())],
+        )
+    })?
 }
 
 /// 删除词条。
@@ -1602,14 +1681,22 @@ pub async fn delete_wordbank_entry(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<(), String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             loader.delete_entry(&wordbank_id, &value)
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank delete task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "delete".to_string()), ("err", err.to_string())],
+        )
+    })?
 }
 
 /// 删除整组词条。
@@ -1620,14 +1707,25 @@ pub async fn delete_wordbank_entry_group(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<(), String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             loader.delete_entry_group(&wordbank_id, &key)
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank group delete task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[
+                ("task", "group delete".to_string()),
+                ("err", err.to_string()),
+            ],
+        )
+    })?
 }
 
 /// 重排同一组内的词条顺序。
@@ -1639,14 +1737,25 @@ pub async fn reorder_wordbank_entry_group(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<WordbankEntry, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             loader.reorder_entry_group(&wordbank_id, &key, values)
         })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank group reorder task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[
+                ("task", "group reorder".to_string()),
+                ("err", err.to_string()),
+            ],
+        )
+    })?
 }
 
 /// 导出选中的词库为 JSON。
@@ -1656,12 +1765,22 @@ pub async fn export_wordbanks(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<String, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| loader.export_wordbanks(wordbank_ids))
+        with_wordbank_loader(&app_for_task, &state, |loader| {
+            loader.export_wordbanks(wordbank_ids)
+        })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank export task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "export".to_string()), ("err", err.to_string())],
+        )
+    })?
 }
 
 /// 从 JSON 导入词库。
@@ -1671,12 +1790,23 @@ pub async fn import_wordbanks(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<Vec<WordbankSummary>, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| loader.import_wordbanks(&payload))
+        with_wordbank_loader(&app_for_task, &state, |loader| {
+            loader.import_wordbanks(&payload)
+        })
     })
     .await
-    .map_err(|err| format!("Failed to join wordbank import task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[("task", "import".to_string()), ("err", err.to_string())],
+        )
+    })?
+    .map(|wordbanks| localize_default_wordbank_summaries(&app, wordbanks))
 }
 
 /// 备份词库数据库文件。
@@ -1686,25 +1816,39 @@ pub fn backup_wordbank_database(
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<WordbankBackupResult, String> {
     {
-        let mut guard = wordbank_state
-            .inner
-            .lock()
-            .map_err(|_| "Failed to lock wordbank state".to_string())?;
+        let mut guard = wordbank_state.inner.lock().map_err(|_| {
+            tr(
+                &app,
+                "backend.wordbank.lock_failed",
+                "Failed to lock wordbank state",
+            )
+        })?;
         *guard = None;
     }
 
-    let source_path = resolve_wordbank_path(&app)
-        .map_err(|err| format!("failed to resolve wordbank path: {err:#}"))?;
+    let source_path = resolve_wordbank_path(&app).map_err(|err| {
+        localize_error(&app, &format!("failed to resolve wordbank path: {err:#}"))
+    })?;
     if !source_path.exists() {
-        return Err("failed to backup wordbank: wordbank database file was not found".to_string());
+        return Err(localize_error(
+            &app,
+            "failed to backup wordbank: wordbank database file was not found",
+        ));
     }
 
-    let backup_dir = resolve_wordbank_backup_dir(&app)
-        .map_err(|err| format!("failed to resolve wordbank backup dir: {err:#}"))?;
+    let backup_dir = resolve_wordbank_backup_dir(&app).map_err(|err| {
+        localize_error(
+            &app,
+            &format!("failed to resolve wordbank backup dir: {err:#}"),
+        )
+    })?;
     fs::create_dir_all(&backup_dir).map_err(|err| {
-        format!(
-            "failed to create backup dir {}: {err}",
-            backup_dir.display()
+        localize_error(
+            &app,
+            &format!(
+                "failed to create backup dir {}: {err}",
+                backup_dir.display()
+            ),
         )
     })?;
 
@@ -1714,10 +1858,13 @@ pub fn backup_wordbank_database(
         .unwrap_or_default();
     let backup_path = backup_dir.join(format!("wordbank-{timestamp}.redb"));
     fs::copy(&source_path, &backup_path).map_err(|err| {
-        format!(
-            "failed to copy wordbank database from {} to {}: {err}",
-            source_path.display(),
-            backup_path.display()
+        localize_error(
+            &app,
+            &format!(
+                "failed to copy wordbank database from {} to {}: {err}",
+                source_path.display(),
+                backup_path.display()
+            ),
         )
     })?;
 
@@ -1733,18 +1880,26 @@ pub fn reset_wordbank_database(
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<(), String> {
     {
-        let mut guard = wordbank_state
-            .inner
-            .lock()
-            .map_err(|_| "Failed to lock wordbank state".to_string())?;
+        let mut guard = wordbank_state.inner.lock().map_err(|_| {
+            tr(
+                &app,
+                "backend.wordbank.lock_failed",
+                "Failed to lock wordbank state",
+            )
+        })?;
         *guard = None;
     }
 
-    let path = resolve_wordbank_path(&app)
-        .map_err(|err| format!("failed to resolve wordbank path: {err:#}"))?;
+    let path = resolve_wordbank_path(&app).map_err(|err| {
+        localize_error(&app, &format!("failed to resolve wordbank path: {err:#}"))
+    })?;
     if path.exists() {
-        fs::remove_file(&path)
-            .map_err(|err| format!("failed to remove wordbank file {}: {err}", path.display()))?;
+        fs::remove_file(&path).map_err(|err| {
+            localize_error(
+                &app,
+                &format!("failed to remove wordbank file {}: {err}", path.display()),
+            )
+        })?;
     }
     Ok(())
 }
@@ -1774,9 +1929,10 @@ pub async fn list_enabled_wordbank_homophones(
     app: AppHandle,
     wordbank_state: State<'_, WordbankState>,
 ) -> Result<Vec<WordbankTokenHomophoneOptions>, String> {
+    let app_for_task = app.clone();
     let state = Arc::clone(&wordbank_state.inner);
     async_runtime::spawn_blocking(move || {
-        with_wordbank_loader(&app, &state, |loader| {
+        with_wordbank_loader(&app_for_task, &state, |loader| {
             let groups = loader.collect_enabled_entry_groups()?;
             let group_map = groups
                 .into_iter()
@@ -1803,7 +1959,17 @@ pub async fn list_enabled_wordbank_homophones(
         })
     })
     .await
-    .map_err(|err| format!("Failed to join enabled homophone query task: {err}"))?
+    .map_err(|err| {
+        tr_args(
+            &app,
+            "backend.wordbank.join_task_failed",
+            "Failed to join wordbank {task} task: {err}",
+            &[
+                ("task", "enabled homophone query".to_string()),
+                ("err", err.to_string()),
+            ],
+        )
+    })?
 }
 
 /// 懒加载共享词库加载器，并在同一把锁下执行具体操作。
@@ -1812,22 +1978,50 @@ fn with_wordbank_loader<T>(
     state: &Arc<Mutex<Option<WordbankLoader>>>,
     op: impl FnOnce(&mut WordbankLoader) -> Result<T>,
 ) -> Result<T, String> {
-    let mut guard = state
-        .lock()
-        .map_err(|_| "Failed to lock wordbank state".to_string())?;
+    let mut guard = state.lock().map_err(|_| {
+        tr(
+            app,
+            "backend.wordbank.lock_failed",
+            "Failed to lock wordbank state",
+        )
+    })?;
     if guard.is_none() {
-        let path = resolve_wordbank_path(app)
-            .map_err(|err| format!("failed to resolve wordbank path: {err:#}"))?;
-        *guard = Some(
-            WordbankLoader::open(path)
-                .map_err(|err| format!("failed to initialize wordbank: {err:#}"))?,
-        );
+        let path = resolve_wordbank_path(app).map_err(|err| {
+            localize_error(app, &format!("failed to resolve wordbank path: {err:#}"))
+        })?;
+        *guard = Some(WordbankLoader::open(path).map_err(|err| {
+            localize_error(app, &format!("failed to initialize wordbank: {err:#}"))
+        })?);
     }
 
-    let loader = guard
-        .as_mut()
-        .ok_or_else(|| "wordbank loader was not initialized".to_string())?;
-    op(loader).map_err(|err| format!("wordbank operation failed: {err:#}"))
+    let loader = guard.as_mut().ok_or_else(|| {
+        tr(
+            app,
+            "backend.wordbank.loader_not_initialized",
+            "wordbank loader was not initialized",
+        )
+    })?;
+    op(loader).map_err(|err| localize_error(app, &format!("wordbank operation failed: {err:#}")))
+}
+
+fn localize_default_wordbank_summary(
+    app: &AppHandle,
+    mut summary: WordbankSummary,
+) -> WordbankSummary {
+    if summary.is_default {
+        summary.name = tr(app, "backend.wordbank.default_name", DEFAULT_WORDBANK_NAME);
+    }
+    summary
+}
+
+fn localize_default_wordbank_summaries(
+    app: &AppHandle,
+    summaries: Vec<WordbankSummary>,
+) -> Vec<WordbankSummary> {
+    summaries
+        .into_iter()
+        .map(|summary| localize_default_wordbank_summary(app, summary))
+        .collect()
 }
 
 /// 根据当前应用配置解析词库数据库路径。
@@ -1873,18 +2067,102 @@ fn normalize_affix(value: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn load_wordbank_meta_record_for_update(
+    write_txn: &WriteTransaction,
+    wordbank_id: &str,
+) -> Result<WordbankMetaRecord> {
+    let meta_table = write_txn
+        .open_table(WORDBANK_META_TABLE)
+        .context("failed to open wordbank metadata table")?;
+    let existing = meta_table
+        .get(wordbank_id)
+        .with_context(|| format!("failed to query wordbank '{wordbank_id}'"))?
+        .ok_or_else(|| anyhow!("wordbank '{wordbank_id}' was not found"))?;
+    decode_meta_record(existing.value())
+}
+
+fn store_wordbank_meta_record(
+    write_txn: &WriteTransaction,
+    wordbank_id: &str,
+    record: &WordbankMetaRecord,
+    error_context: impl FnOnce() -> String,
+) -> Result<()> {
+    let mut meta_table = write_txn
+        .open_table(WORDBANK_META_TABLE)
+        .context("failed to reopen wordbank metadata table")?;
+    meta_table
+        .insert(wordbank_id, encode_meta_record(record)?.as_str())
+        .with_context(error_context)?;
+    Ok(())
+}
+
+fn build_wordbank_summary(
+    id: String,
+    record: WordbankMetaRecord,
+    entry_total: usize,
+) -> WordbankSummary {
+    WordbankSummary {
+        id,
+        name: record.name,
+        description: record.description,
+        prefix: record.prefix,
+        suffix: record.suffix,
+        sort_order: record.sort_order,
+        is_default: record.is_default,
+        is_enabled: record.is_enabled,
+        entry_total,
+    }
+}
+
+fn compare_wordbank_sort_fields(
+    left_is_default: bool,
+    left_sort_order: u64,
+    left_name: &str,
+    left_id: &str,
+    right_is_default: bool,
+    right_sort_order: u64,
+    right_name: &str,
+    right_id: &str,
+) -> std::cmp::Ordering {
+    right_is_default
+        .cmp(&left_is_default)
+        .then_with(|| left_sort_order.cmp(&right_sort_order))
+        .then_with(|| left_name.cmp(right_name))
+        .then_with(|| left_id.cmp(right_id))
+}
+
+fn sort_wordbank_export_bank(
+    left: &WordbankExportBank,
+    right: &WordbankExportBank,
+) -> std::cmp::Ordering {
+    compare_wordbank_sort_fields(
+        left.is_default,
+        left.sort_order,
+        &left.name,
+        &left.name,
+        right.is_default,
+        right.sort_order,
+        &right.name,
+        &right.name,
+    )
+}
+
 fn sort_wordbank_meta_record(
     left_id: &str,
     left: &WordbankMetaRecord,
     right_id: &str,
     right: &WordbankMetaRecord,
 ) -> std::cmp::Ordering {
-    right
-        .is_default
-        .cmp(&left.is_default)
-        .then_with(|| left.sort_order.cmp(&right.sort_order))
-        .then_with(|| left.name.cmp(&right.name))
-        .then_with(|| left_id.cmp(right_id))
+    compare_wordbank_sort_fields(
+        left.is_default,
+        left.sort_order,
+        &left.name,
+        left_id,
+        right.is_default,
+        right.sort_order,
+        &right.name,
+        right_id,
+    )
 }
 
 fn sort_wordbank_meta_entry(
@@ -1895,12 +2173,16 @@ fn sort_wordbank_meta_entry(
 }
 
 fn sort_wordbank_summary(left: &WordbankSummary, right: &WordbankSummary) -> std::cmp::Ordering {
-    right
-        .is_default
-        .cmp(&left.is_default)
-        .then_with(|| left.sort_order.cmp(&right.sort_order))
-        .then_with(|| left.name.cmp(&right.name))
-        .then_with(|| left.id.cmp(&right.id))
+    compare_wordbank_sort_fields(
+        left.is_default,
+        left.sort_order,
+        &left.name,
+        &left.id,
+        right.is_default,
+        right.sort_order,
+        &right.name,
+        &right.id,
+    )
 }
 
 /// 将词条规范化为仅包含中文字符的字符串。
@@ -2007,7 +2289,7 @@ fn ensure_wordbank_exists_in_read(
 }
 
 fn ensure_wordbank_exists_in_write(
-    txn: &redb::WriteTransaction,
+    txn: &WriteTransaction,
     wordbank_id: &str,
 ) -> Result<WordbankMetaRecord> {
     let meta_table = txn
@@ -2021,7 +2303,7 @@ fn ensure_wordbank_exists_in_write(
 }
 
 fn ensure_wordbank_tables(
-    write_txn: &redb::WriteTransaction,
+    write_txn: &WriteTransaction,
     word_table_name: &'static str,
     homophone_table_name: &'static str,
     order_table_name: &'static str,
@@ -2058,21 +2340,21 @@ fn order_table_def(table_name: &str) -> TableDefinition<'_, &str, &str> {
 }
 
 fn open_word_table_write<'txn>(
-    txn: &'txn redb::WriteTransaction,
+    txn: &'txn WriteTransaction,
     table_name: &'static str,
 ) -> Result<redb::Table<'txn, &'static str, &'static str>, redb::TableError> {
     txn.open_table(word_table_def(table_name))
 }
 
 fn open_homophone_table_write<'txn>(
-    txn: &'txn redb::WriteTransaction,
+    txn: &'txn WriteTransaction,
     table_name: &'static str,
 ) -> Result<redb::MultimapTable<'txn, &'static str, &'static str>, redb::TableError> {
     txn.open_multimap_table(homophone_table_def(table_name))
 }
 
 fn open_order_table_write<'txn>(
-    txn: &'txn redb::WriteTransaction,
+    txn: &'txn WriteTransaction,
     table_name: &'static str,
 ) -> Result<redb::Table<'txn, &'static str, &'static str>, redb::TableError> {
     txn.open_table(order_table_def(table_name))
@@ -2100,21 +2382,21 @@ fn open_order_table_read<'txn>(
 }
 
 fn delete_word_table(
-    txn: &redb::WriteTransaction,
+    txn: &WriteTransaction,
     table_name: &'static str,
 ) -> Result<bool, redb::TableError> {
     txn.delete_table(word_table_def(table_name))
 }
 
 fn delete_homophone_table(
-    txn: &redb::WriteTransaction,
+    txn: &WriteTransaction,
     table_name: &'static str,
 ) -> Result<bool, redb::TableError> {
     txn.delete_multimap_table(homophone_table_def(table_name))
 }
 
 fn delete_order_table(
-    txn: &redb::WriteTransaction,
+    txn: &WriteTransaction,
     table_name: &'static str,
 ) -> Result<bool, redb::TableError> {
     txn.delete_table(order_table_def(table_name))

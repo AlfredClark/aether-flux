@@ -2,7 +2,7 @@ import type { Pathname } from "$app/types";
 
 export type Tab = {
   name: string;
-  label: string;
+  labelKey: "page_home" | "page_tools" | "page_settings" | "page_about";
   path: Pathname;
   home: boolean;
 };

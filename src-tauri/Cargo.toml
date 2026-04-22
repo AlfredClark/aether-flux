@@ -8,7 +8,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
+# The `_lib` suffix may seem redundant, but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be ocd ../nly an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "aether_flux_lib"
@@ -19,34 +19,24 @@ tauri-build = { version = "2", features = ["config-json5"] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "config-json5", "tray-icon"] }
-tauri-plugin-opener = "2"
-tauri-plugin-store = "2"
 tauri-plugin-fs = "2"
+tauri-plugin-i18n = "2.0.2"
+tauri-plugin-store = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-system-fonts = "2.0.2"
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cpal = "0.17"
+redb = "4.1.0"
 hound = "3"
+pinyin = "0.11.0"
 anyhow = "1.0.102"
 ndarray = "0.17.2"
-ort = { version = "2.0.0-rc.12", features = ["cuda"] }
 realfft = "3.5.0"
 tokenizers = "0.22.2"
 jieba-rs = { version = "0.7", features = ["tfidf", "textrank"] }
-pinyin = "0.11.0"
-redb = "4.1.0"
-tauri-plugin-dialog = "2"
-
-[profile.dev]
-incremental = true
-
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
-panic = "abort"
-strip = true
+ort = { version = "2.0.0-rc.12", features = ["cuda", "load-dynamic", "ndarray"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-positioner = "2"

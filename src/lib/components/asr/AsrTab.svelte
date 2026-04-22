@@ -535,7 +535,7 @@
         {/if}
 
         {#if shouldShowHotkeyHint()}
-          <div class="alert min-h-0 flex-1 py-2 alert-info">
+          <div class="ml-auto alert min-h-0 py-2 alert-info">
             <span class="text-sm">
               {m.tools_audio_asr_hotkey_hint({
                 shortcut: hotkeyShortcut,

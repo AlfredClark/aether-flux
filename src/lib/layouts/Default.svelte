@@ -56,7 +56,7 @@
           name="nav_tabs"
           class="tab text-base 2xl:text-lg"
           bind:group={path}
-          aria-label={tab.label}
+          aria-label={m[tab.labelKey]()}
           value={tab.path}
           checked={tab.home} />
       {/each}

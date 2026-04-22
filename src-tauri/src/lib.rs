@@ -1,35 +1,54 @@
-mod app_shell;
 mod audio;
+mod settings;
+mod utils;
 
-use app_shell::{
-    build_recording_status_window, build_tray, configure_asr_hotkey, get_tray_mode_enabled, handle_window_event,
-    set_tray_mode_enabled, AppShellState,
-};
-use audio::asr::wordbank::{
-    add_wordbank_entries_from_text, add_wordbank_entry, backup_wordbank_database, clear_wordbank,
-    create_wordbank, delete_wordbank, delete_wordbank_entry, delete_wordbank_entry_group,
-    export_wordbanks, import_wordbanks, list_enabled_wordbank_homophones, list_wordbank_entries,
-    list_wordbanks, reorder_wordbank_entry_group, reorder_wordbanks, reset_wordbank_database,
-    set_wordbank_enabled, update_wordbank, update_wordbank_entry, WordbankState,
-};
-use audio::asr::{
-    clear_asr_recording_cache, destroy_asr_model, get_asr_recording_cache_stats, get_asr_status,
-    load_asr_model, rebuild_asr_decomposer, rebuild_asr_fitter, recognize_audio, AsrState,
-};
-use audio::recorder::{
-    get_recording_status, list_input_devices, start_recording, stop_recording, RecorderState,
-};
+use audio::asr::wordbank::WordbankState;
+use audio::asr::AsrState;
+use audio::recorder::RecorderState;
+use settings::initialize_settings_state;
 use tauri::Manager;
+use tauri_plugin_i18n::PluginI18nExt;
+use utils::app_shell::{
+    build_tray, handle_window_event, refresh_tray_locale, AppShellState,
+};
+
+macro_rules! collect_invoke_commands {
+    ([$($commands:path,)*]) => {
+        tauri::generate_handler![$($commands),*]
+    };
+    ([$($commands:path,)*] $module_macro:ident $($rest:ident)*) => {
+        $module_macro!(collect_invoke_commands [$($commands,)*] $($rest)*)
+    };
+}
+
+macro_rules! app_invoke_handler {
+    () => {
+        collect_invoke_commands!(
+            []
+            app_shell_commands
+            settings_commands
+            recorder_commands asr_commands
+        )
+    };
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 禁用DMA-BUF渲染，待优化
     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     tauri::Builder::default()
-        .plugin(tauri_plugin_positioner::init())
+        .manage(RecorderState::default())
+        .manage(AsrState::default())
+        .manage(WordbankState::default())
+        .plugin(tauri_plugin_i18n::init(Some("zh".to_string())))
         .setup(|app| {
+            let (settings_state, settings) =
+                initialize_settings_state(&app.handle()).map_err(|err| err.to_string())?;
+            app.manage(settings_state);
+            app.manage(AppShellState::default());
+            app.i18n().set_locale(&settings.locale);
             build_tray(&app.handle())?;
-            build_recording_status_window(&app.handle())?;
+            refresh_tray_locale(&app.handle())?;
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -42,46 +61,7 @@ pub fn run() {
             let state = window.state::<AppShellState>();
             handle_window_event(window, event, state);
         })
-        .manage(AppShellState::default())
-        .manage(RecorderState::default())
-        .manage(AsrState::default())
-        .manage(WordbankState::default())
-        .invoke_handler(tauri::generate_handler![
-            list_input_devices,
-            get_recording_status,
-            start_recording,
-            stop_recording,
-            configure_asr_hotkey,
-            set_tray_mode_enabled,
-            get_tray_mode_enabled,
-            get_asr_status,
-            get_asr_recording_cache_stats,
-            clear_asr_recording_cache,
-            rebuild_asr_fitter,
-            rebuild_asr_decomposer,
-            load_asr_model,
-            destroy_asr_model,
-            recognize_audio,
-            list_wordbanks,
-            create_wordbank,
-            update_wordbank,
-            export_wordbanks,
-            import_wordbanks,
-            backup_wordbank_database,
-            reorder_wordbanks,
-            set_wordbank_enabled,
-            delete_wordbank,
-            clear_wordbank,
-            list_wordbank_entries,
-            list_enabled_wordbank_homophones,
-            add_wordbank_entry,
-            add_wordbank_entries_from_text,
-            update_wordbank_entry,
-            delete_wordbank_entry,
-            delete_wordbank_entry_group,
-            reorder_wordbank_entry_group,
-            reset_wordbank_database
-        ])
-        .run(tauri::generate_context!())
+        .invoke_handler(app_invoke_handler!())
+        .run(tauri::generate_context!("tauri.conf.json"))
         .expect("error while running tauri application");
 }

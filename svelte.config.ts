@@ -1,5 +1,6 @@
 // Tauri doesn't have a Node.js server to do proper SSR
-// so we use adapter-static with a fallback to index.html to put the site in SPA mode
+// so we use adapter-static with a dedicated SPA fallback page.
+// Keep it different from index.html to avoid adapter-static overwriting the main entry during build.
 // See: https://svelte.dev/docs/kit/single-page-apps
 // See: https://v2.tauri.app/start/frontend/sveltekit/ for more info
 import adapter from "@sveltejs/adapter-static";
@@ -9,7 +10,7 @@ const config: import("@sveltejs/kit").Config = {
   preprocess: vitePreprocess(),
   kit: {
     adapter: adapter({
-      fallback: "index.html"
+      fallback: "200.html"
     })
   }
 };

@@ -26,14 +26,13 @@
     "format": "prettier --write .",
     "lint": "prettier --check . && eslint . && stylelint \"**/*.css\"",
     "gen:icon": "tauri icon -o ./src-tauri/icons ./static/app-icon.svg",
-    "clean": "rimraf src-tauri/target build"
+    "clean": "rimraf ./target build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "@tauri-apps/plugin-fs": "^2.5.0",
     "@tauri-apps/plugin-opener": "~2",
-    "tauri-plugin-audio-recorder-api": "^0.1.0",
     "tauri-plugin-system-fonts-api": "^2.0.2"
   },
   "devDependencies": {
