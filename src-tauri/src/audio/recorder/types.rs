@@ -30,6 +30,8 @@ pub(crate) struct ActiveRecording {
 pub struct InputDeviceInfo {
     pub id: String,
     pub name: String,
+    pub manufacturer: Option<String>,
+    pub extended: String,
     pub is_default: bool,
 }
 

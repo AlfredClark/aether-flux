@@ -334,8 +334,8 @@
   });
 </script>
 
-<div class="mx-auto flex h-full min-h-0 w-full max-w-5xl flex-col pr-1 pb-10">
-  <div class="flex flex-col gap-4 pb-15">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-5xl flex-col pr-1">
+  <div class="flex flex-col gap-4 pb-10">
     <div class="card border border-base-300 bg-base-100 shadow-md">
       <div class="card-body gap-4">
         <div class="text-base font-semibold">{m.tools_audio_asr_settings_hotkey_title()}</div>

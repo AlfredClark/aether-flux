@@ -5,10 +5,16 @@
   "windows": ["main"],
   "permissions": [
     "fs:default",
+    "fs:allow-mkdir",
+    "fs:allow-remove",
     "fs:allow-write-text-file",
     "fs:scope-appcache-recursive",
     "fs:allow-appcache-read-recursive",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "$APPCACHE/recorder" }, { "path": "$APPCACHE/recorder/**" }]
+    },
     "system-fonts:default",
     "core:default",
     "core:window:default",

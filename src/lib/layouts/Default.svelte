@@ -67,7 +67,7 @@
     {@render children?.()}
   </main>
 
-  <footer class="footer border border-base-300 p-1">
+  <footer class="footer border-t border-base-300 p-1">
     <div class="flex w-full items-center justify-center">
       <p>Copyright © {new Date().getFullYear()} Alfred Clark. All rights reserved.</p>
     </div>
@@ -81,7 +81,7 @@
       "nav"
       "main"
       "footer";
-    grid-template-rows: auto auto 1fr auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
   }
 
   #container > header {

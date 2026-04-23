@@ -247,6 +247,15 @@ fn localize_segment<R: Runtime, T: Manager<R>>(app: &T, segment: &str) -> String
                     err,
                 );
             }
+            if let Some(err) = segment.strip_prefix("Failed to query input configs") {
+                return localize_with_suffix(
+                    app,
+                    "backend.recorder.query_input_configs_failed",
+                    "Failed to query input configs",
+                    "err",
+                    err,
+                );
+            }
             if let Some(sample_format) = segment.strip_prefix("Unsupported sample format") {
                 return localize_with_suffix(
                     app,
@@ -254,6 +263,56 @@ fn localize_segment<R: Runtime, T: Manager<R>>(app: &T, segment: &str) -> String
                     "Unsupported sample format",
                     "sample_format",
                     sample_format,
+                );
+            }
+            if segment == "Selected input format is not supported by this device" {
+                return tr(
+                    app,
+                    "backend.recorder.input_format_not_supported",
+                    "Selected input format is not supported by this device",
+                );
+            }
+            if let Some(range) =
+                segment.strip_prefix("Selected buffer size is outside the supported range")
+            {
+                return localize_with_suffix(
+                    app,
+                    "backend.recorder.buffer_size_out_of_range_range",
+                    "Selected buffer size is outside the supported range",
+                    "range",
+                    range,
+                );
+            }
+            if segment == "This device does not expose a fixed buffer size range; use default" {
+                return tr(
+                    app,
+                    "backend.recorder.fixed_buffer_size_unavailable",
+                    "This device does not expose a fixed buffer size range; use default",
+                );
+            }
+            if segment == "WAV writer is not available"
+                || segment == "WAV writer is already finalized"
+            {
+                return tr(
+                    app,
+                    "backend.recorder.wav_writer_unavailable",
+                    "WAV writer is not available",
+                );
+            }
+            if let Some(err) = segment.strip_prefix("Failed to write WAV sample") {
+                return localize_with_suffix(
+                    app,
+                    "backend.recorder.write_wav_sample_failed",
+                    "Failed to write WAV sample",
+                    "err",
+                    err,
+                );
+            }
+            if segment == "Unsupported WAV encoding format" {
+                return tr(
+                    app,
+                    "backend.recorder.unsupported_wav_encoding",
+                    "Unsupported WAV encoding format",
                 );
             }
             if let Some(err) = segment.strip_prefix("Failed to start recording stream") {

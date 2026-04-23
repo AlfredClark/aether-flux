@@ -2,9 +2,9 @@
   import { browser } from "$app/environment";
   import { resolve } from "$app/paths";
   import { onMount } from "svelte";
-  import AsrSettingsTab from "$lib/components/asr/AsrSettingsTab.svelte";
-  import AsrTab from "$lib/components/asr/AsrTab.svelte";
-  import WordBankTab from "$lib/components/asr/WordBankTab.svelte";
+  import AsrSettingsTab from "$lib/components/tabs/asr/AsrSettingsTab.svelte";
+  import AsrTab from "$lib/components/tabs/asr/AsrTab.svelte";
+  import WordBankTab from "$lib/components/tabs/asr/WordBankTab.svelte";
   import { m } from "$lib/i18n/paraglide/messages";
 
   type AsrPageTab = "use" | "word-bank" | "settings";
@@ -29,7 +29,7 @@
   });
 </script>
 
-<div class="tabs-lift tabs flex h-full w-full flex-wrap content-start overflow-hidden">
+<div class="full-height-tabs tabs-lift tabs flex h-full w-full flex-wrap content-start overflow-hidden">
   <input
     type="radio"
     name="audio-asr-tabs"
@@ -37,7 +37,7 @@
     aria-label={m.tools_audio_asr_use()}
     checked={activeTab === "use"}
     on:change={() => setActiveTab("use")} />
-  <div class="tab-content h-full w-full overflow-hidden border-base-300 bg-base-100 p-4 sm:p-6">
+  <div class="tab-content w-full overflow-hidden rounded-none border-base-300 bg-base-100 p-4 sm:p-6">
     <AsrTab />
   </div>
 
@@ -48,7 +48,7 @@
     aria-label={m.tools_audio_asr_word_bank()}
     checked={activeTab === "word-bank"}
     on:change={() => setActiveTab("word-bank")} />
-  <div class="tab-content h-full w-full overflow-hidden border-base-300 bg-base-100 p-4 sm:p-6">
+  <div class="tab-content w-full overflow-hidden rounded-none border-base-300 bg-base-100 p-4 sm:p-6">
     <WordBankTab />
   </div>
 
@@ -59,7 +59,7 @@
     aria-label={m.tools_audio_asr_settings()}
     checked={activeTab === "settings"}
     on:change={() => setActiveTab("settings")} />
-  <div class="tab-content h-full w-full overflow-y-auto border-base-300 bg-base-100 p-4 sm:p-6">
+  <div class="tab-content w-full overflow-y-auto rounded-none border-base-300 bg-base-100 p-4 sm:p-6">
     <AsrSettingsTab />
   </div>
 

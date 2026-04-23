@@ -1,5 +1,6 @@
 mod device;
 mod encoding;
+pub mod record;
 mod stream;
 mod types;
 
@@ -30,6 +31,9 @@ macro_rules! recorder_commands {
                 $crate::audio::recorder::list_input_devices,
                 $crate::audio::recorder::start_recording,
                 $crate::audio::recorder::stop_recording,
+                $crate::audio::recorder::record::list_record_input_devices,
+                $crate::audio::recorder::record::start_record,
+                $crate::audio::recorder::record::stop_record,
             ]
             $($rest)*
         )

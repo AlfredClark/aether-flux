@@ -10,6 +10,8 @@
   type InputDeviceInfo = {
     id: string;
     name: string;
+    manufacturer: string | null;
+    extended: string;
     is_default: boolean;
   };
 
@@ -176,7 +178,7 @@
     resetRecognitionResult();
 
     const dir = await appCacheDir();
-    const recorderDir = await join(dir, "recorder");
+    const recorderDir = await join(dir, "asr");
     const outputPath = await join(recorderDir, `asr-${Date.now()}`);
 
     try {
@@ -390,7 +392,7 @@
   });
 </script>
 
-<div class="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-col pb-10">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-col">
   <div class="card h-full min-h-0 border border-base-300 bg-base-100 shadow-md">
     <div class="card-body flex min-h-0 gap-4 overflow-hidden">
       <div class="max-h-6xl flex flex-col gap-4 lg:flex-row">

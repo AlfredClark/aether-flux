@@ -4,13 +4,12 @@ mod utils;
 
 use audio::asr::wordbank::WordbankState;
 use audio::asr::AsrState;
+use audio::recorder::record::RecordState;
 use audio::recorder::RecorderState;
 use settings::initialize_settings_state;
 use tauri::Manager;
 use tauri_plugin_i18n::PluginI18nExt;
-use utils::app_shell::{
-    build_tray, handle_window_event, refresh_tray_locale, AppShellState,
-};
+use utils::app_shell::{build_tray, handle_window_event, refresh_tray_locale, AppShellState};
 
 macro_rules! collect_invoke_commands {
     ([$($commands:path,)*]) => {
@@ -27,7 +26,8 @@ macro_rules! app_invoke_handler {
             []
             app_shell_commands
             settings_commands
-            recorder_commands asr_commands
+            recorder_commands
+            asr_commands
         )
     };
 }
@@ -38,6 +38,7 @@ pub fn run() {
     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     tauri::Builder::default()
         .manage(RecorderState::default())
+        .manage(RecordState::default())
         .manage(AsrState::default())
         .manage(WordbankState::default())
         .plugin(tauri_plugin_i18n::init(Some("zh".to_string())))

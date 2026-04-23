@@ -20,10 +20,14 @@ pub fn list_input_devices_impl() -> Result<Vec<InputDeviceInfo>, String> {
     for device in devices {
         let id = stable_device_id(&device)?;
         let name = readable_device_name(&device);
+        let manufacturer = readable_device_manufacturer(&device);
+        let extended = readable_device_extended(&device);
         result.push(InputDeviceInfo {
             is_default: default_device_id.as_deref() == Some(id.as_str()),
             id,
             name,
+            manufacturer,
+            extended,
         });
     }
 
@@ -60,4 +64,20 @@ pub fn readable_device_name(device: &Device) -> String {
         .description()
         .map(|desc| desc.name().to_string())
         .unwrap_or_else(|_| "Unknown Input Device".to_string())
+}
+
+/// 返回设备厂商。与名称不同，厂商信息可能不存在。
+pub fn readable_device_manufacturer(device: &Device) -> Option<String> {
+    device
+        .description()
+        .ok()
+        .and_then(|desc| desc.manufacturer().map(ToString::to_string))
+}
+
+/// 返回设备扩展描述。与厂商不同，缺失时返回空列表。
+pub fn readable_device_extended(device: &Device) -> String {
+    device
+        .description()
+        .map(|desc| desc.extended().to_vec().join("-"))
+        .unwrap_or_default()
 }

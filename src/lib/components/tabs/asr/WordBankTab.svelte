@@ -597,7 +597,7 @@
   }
 </script>
 
-<div class="mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col pb-10">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col">
   <div class="grid h-full min-h-0 gap-4 xl:grid-cols-2">
     <div class="flex min-h-0 flex-col gap-4">
       <div class="card border border-base-300 bg-base-100 shadow-md">
